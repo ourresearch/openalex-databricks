@@ -85,8 +85,7 @@ if len(work_id_predicates) == 125:
 print(len(final_predicates))
 
 testing_new_predicates = final_predicates[:-1].copy()
-testing_new_predicates.append(f'paper_id >= {work_id_predicates[-3]} and paper_id < {work_id_predicates[-2]}')
-testing_new_predicates.append(f'paper_id >= {work_id_predicates[-2]} and paper_id < 4395018129')
+testing_new_predicates.append(f'paper_id >= {work_id_predicates[-3]} and paper_id < 4395018129')
 testing_new_predicates.append('paper_id >= 4395018129 and paper_id < 4395318129')
 testing_new_predicates.append('paper_id >= 4395318129 and paper_id < 4395718129')
 testing_new_predicates.append('paper_id >= 4395718129 and paper_id < 4396018129')
@@ -104,13 +103,15 @@ testing_new_predicates
 df = (spark.read
       .jdbc(
               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
-              table="(select distinct paper_id, original_title, doi_lower, journal_id, merge_into_id, publication_date, doc_type, genre, arxiv_id, is_paratext, best_url, best_free_url, created_date from mid.work) new_table", 
+              table="(select distinct paper_id, original_title, doi_lower, oa_status, journal_id, merge_into_id, publication_date, doc_type, genre, arxiv_id, is_paratext, best_url, best_free_url, created_date from mid.work) new_table", 
               properties={"user": secret['username'],
                           "password": secret['password']}, 
               predicates=testing_new_predicates))
 
 df \
-        .repartition(384).write.mode('overwrite') \
+        .repartition(384)\
+        .dropDuplicates()\
+        .write.mode('overwrite') \
         .parquet(f"{database_copy_save_path}/mid/work")
 
 # COMMAND ----------
@@ -126,7 +127,9 @@ df = (spark.read
               predicates=testing_new_predicates))
 
 df \
-        .repartition(384).write.mode('overwrite') \
+        .repartition(384)\
+        .dropDuplicates()\
+        .write.mode('overwrite') \
         .parquet(f"{database_copy_save_path}/mid/affiliation")
 
 # COMMAND ----------
@@ -183,7 +186,9 @@ df = (spark.read
               predicates=testing_new_predicates))
 
 df \
-        .repartition(384).write.mode('overwrite') \
+        .repartition(384)\
+        .dropDuplicates()\
+        .write.mode('overwrite') \
         .parquet(f"{database_copy_save_path}/mid/work_concept")
 
 # COMMAND ----------
@@ -196,10 +201,12 @@ df = (spark.read
               table="(select distinct paper_id, paper_reference_id from mid.citation where paper_reference_id is not null) as new_table", 
               properties={"user": secret['username'],
                           "password": secret['password']}, 
-              predicates=final_predicates))
+              predicates=testing_new_predicates))
 
 df \
-        .repartition(384).write.mode('overwrite') \
+        .repartition(384)\
+        .dropDuplicates()\
+        .write.mode('overwrite') \
         .parquet(f"{database_copy_save_path}/mid/citation")
 
 # COMMAND ----------
@@ -216,17 +223,17 @@ df = (spark.read
     .load())
 
 author_id_predicates = df.collect()[0][0]
-author_id_predicates = [x for x in author_id_predicates if x > 5000000000]
+author_id_predicates = [x for x in author_id_predicates if x >= 5000000000]
 
 if len(author_id_predicates) == 125:
     final_predicates = []
-    final_predicates.append(f"author_id >= 0 and author_id < {author_id_predicates[2]}")
+    final_predicates.append(f"author_id >= 5000000000 and author_id < {author_id_predicates[2]}")
     for i in range(2, len(author_id_predicates[:-3]), 3):
         final_predicates.append(f"author_id >= {author_id_predicates[i]} and author_id < {author_id_predicates[i+3]}")
     final_predicates.append(f"author_id >= {author_id_predicates[-2]}")
 elif len(author_id_predicates) <= 35:
     final_predicates = []
-    final_predicates.append(f"author_id >= 0 and author_id < {author_id_predicates[0]}")
+    final_predicates.append(f"author_id >= 5000000000 and author_id < {author_id_predicates[0]}")
     for i in range(len(author_id_predicates[:-1])):
         final_predicates.append(f"author_id >= {author_id_predicates[i]} and author_id < {author_id_predicates[i+1]}")
     final_predicates.append(f"author_id >= {author_id_predicates[-1]}")
@@ -242,14 +249,53 @@ final_predicates
 df = (spark.read
       .jdbc(
               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
-              table="(select distinct author_id, display_name, merge_into_id from mid.author where author_id > 5000000000) as new_table", 
+              table="(select distinct author_id, display_name, merge_into_id from mid.author where author_id >= 5000000000) as new_table", 
               properties={"user": secret['username'],
                           "password": secret['password']}, 
               predicates=final_predicates))
 
 df \
-        .repartition(384).write.mode('overwrite') \
+        .repartition(384)\
+        .dropDuplicates()\
+        .write.mode('overwrite') \
         .parquet(f"{database_copy_save_path}/mid/author")
+
+# COMMAND ----------
+
+# orcid.openalex_authorships
+df = (spark.read
+        .format("postgresql")
+        .option("dbtable", f"(select distinct paper_id, author_sequence_number, orcid, random_num from orcid.openalex_authorships) as new_table")
+        .option("host", secret['host'])
+        .option("port", secret['port'])
+        .option("database", secret['dbname'])
+        .option("user", secret['username'])
+        .option("password", secret['password'])
+        .option("partitionColumn", "random_num")
+        .option("lowerBound", "0")
+        .option("upperBound", "50")
+        .option("numPartitions", "26")
+        .option("fetchsize", "200").load())
+
+df \
+        .repartition(384).write.mode('overwrite') \
+        .parquet(f"{database_copy_save_path}/orcid/openalex_authorships")
+
+# COMMAND ----------
+
+# orcid.add_orcid
+df = (spark.read
+        .format("postgresql")
+        .option("dbtable", f"(select distinct work_author_id, new_orcid, request_date from orcid.add_orcid) as new_table")
+        .option("host", secret['host'])
+        .option("port", secret['port'])
+        .option("database", secret['dbname'])
+        .option("user", secret['username'])
+        .option("password", secret['password']).load())
+
+df \
+        .write.mode('overwrite') \
+        .parquet(f"{database_copy_save_path}/orcid/add_orcid")
 
 # COMMAND ----------
 

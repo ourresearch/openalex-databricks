@@ -113,6 +113,22 @@ df \
 
 # COMMAND ----------
 
+# # mid.citation_unmatched
+
+# df = (spark.read
+#       .jdbc(
+#               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
+#               table="(select distinct paper_id, reference_sequence_number, raw_json from mid.citation_unmatched) as new_table", 
+#               properties={"user": secret['username'],
+#                           "password": secret['password']}, 
+#               predicates=testing_new_predicates))
+
+# df \
+#     .repartition(384).write.mode('overwrite') \
+#     .parquet(f"{database_copy_save_path}/mid/citation_unmatched")
+
+# COMMAND ----------
+
 # mid.journal
 
 df = (spark.read
@@ -204,3 +220,136 @@ df = (spark.read
 df \
     .repartition(384).write.mode('overwrite') \
     .parquet(f"{database_copy_save_path}/mid/work_extra_ids")
+
+# COMMAND ----------
+
+# mid.institution
+df = (spark.read
+    .format("postgresql")
+    .option("dbtable", f"mid.institution")
+    .option("host", secret['host'])
+    .option("port", secret['port'])
+    .option("database", secret['dbname'])
+    .option("user", secret['username'])
+    .option("password", secret['password'])
+    .load())
+
+df \
+    .coalesce(64) \
+    .write.mode('overwrite') \
+    .parquet(f"{database_copy_save_path}/mid/institution")
+
+spark.read.parquet(f"{database_copy_save_path}/mid/institution") \
+    .coalesce(1) \
+    .write.mode('overwrite') \
+    .parquet(f"{database_copy_save_path}/mid/institution_single_file")
+
+# COMMAND ----------
+
+# ins.ror_base
+df = (spark.read
+    .format("postgresql")
+    .option("dbtable", f"ins.ror_base")
+    .option("host", secret['host'])
+    .option("port", secret['port'])
+    .option("database", secret['dbname'])
+    .option("user", secret['username'])
+    .option("password", secret['password'])
+    .load())
+
+df \
+    .coalesce(64) \
+    .write.mode('overwrite') \
+    .parquet(f"{database_copy_save_path}/ins/ror_base")
+
+# COMMAND ----------
+
+# ins.ror_types
+df = (spark.read
+    .format("postgresql")
+    .option("dbtable", f"ins.ror_types")
+    .option("host", secret['host'])
+    .option("port", secret['port'])
+    .option("database", secret['dbname'])
+    .option("user", secret['username'])
+    .option("password", secret['password'])
+    .load())
+
+df \
+    .coalesce(64) \
+    .write.mode('overwrite') \
+    .parquet(f"{database_copy_save_path}/ins/ror_types")
+
+# COMMAND ----------
+
+# ins.ror_aliases
+df = (spark.read
+    .format("postgresql")
+    .option("dbtable", f"ins.ror_aliases")
+    .option("host", secret['host'])
+    .option("port", secret['port'])
+    .option("database", secret['dbname'])
+    .option("user", secret['username'])
+    .option("password", secret['password'])
+    .load())
+
+df \
+    .coalesce(64) \
+    .write.mode('overwrite') \
+    .parquet(f"{database_copy_save_path}/ins/ror_aliases")
+
+# COMMAND ----------
+
+# ins.ror_acronyms
+df = (spark.read
+    .format("postgresql")
+    .option("dbtable", f"ins.ror_acronyms")
+    .option("host", secret['host'])
+    .option("port", secret['port'])
+    .option("database", secret['dbname'])
+    .option("user", secret['username'])
+    .option("password", secret['password'])
+    .load())
+
+df \
+    .coalesce(64) \
+    .write.mode('overwrite') \
+    .parquet(f"{database_copy_save_path}/ins/ror_acronyms")
+
+# COMMAND ----------
+
+# ins.ror_labels
+df = (spark.read
+    .format("postgresql")
+    .option("dbtable", f"ins.ror_labels")
+    .option("host", secret['host'])
+    .option("port", secret['port'])
+    .option("database", secret['dbname'])
+    .option("user", secret['username'])
+    .option("password", secret['password'])
+    .load())
+
+df \
+    .coalesce(64) \
+    .write.mode('overwrite') \
+    .parquet(f"{database_copy_save_path}/ins/ror_labels")
+
+# COMMAND ----------
+
+# ins.recordthresher_record
+
+# df = (spark.read
+# .format("postgresql")
+# .option("dbtable", 
+#         f"(select work_id, title, journal_id, authors from ins.recordthresher_record where record_type = 'mag_location') as new_table")
+# .option("host", secret['host'])
+# .option("port", secret['port'])
+# .option("database", secret['dbname'])
+# .option("user", secret['username'])
+# .option("password", secret['password'])
+# .load())
+
+# df \
+# .repartition(256) \
+# .write.mode('overwrite') \
+# .parquet(f"{database_copy_save_path}/ins/recordthresher_record_partial")

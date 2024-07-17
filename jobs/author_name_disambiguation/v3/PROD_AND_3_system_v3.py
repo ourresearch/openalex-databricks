@@ -47,16 +47,34 @@ def get_secret(secret_name = "prod/psqldb/conn_string"):
     secret = json.loads(secret_string)
     return secret
 
+def shutdown_dynos(heroku_secret_token, dynos_to_stop):
+    heroku_conn = heroku3.from_key(heroku_secret_token)
+    app = heroku_conn.app("openalex-guts")
+    current_quantities = []
+
+    for dyno_name in dynos_to_stop:
+        current_quantities.append(app.process_formation()[dyno_name].quantity)
+        app.process_formation()[dyno_name].scale(0)
+    return current_quantities
+
+def restart_dynos(heroku_secret_token, dynos_to_stop, old_quantities):
+    heroku_conn = heroku3.from_key(heroku_secret_token)
+    app = heroku_conn.app("openalex-guts")
+
+    for dyno_name, dyno_quantity in zip(dynos_to_stop, old_quantities):
+        app.process_formation()[dyno_name].scale(dyno_quantity)
+
 # COMMAND ----------
 
 secret = get_secret()
+heroku_secret = get_secret(secret_name = "prod/heroku/oauth")
 buckets = get_secret("prod/aws/buckets")
 
 # COMMAND ----------
 
 start_datetime = datetime.datetime.now()
 curr_date = start_datetime.strftime("%Y_%m_%d_%H_%M")
-# curr_date = '2024_04_24_19_06'
+# curr_date = '2024_07_14_23_18'
 prod_save_path = f"{buckets['and_save_path']}/V3/PROD"
 temp_save_path = f"{buckets['temp_save_path']}/{curr_date}"
 orcid_save_path = f"{buckets['orcid_save_path']}"
@@ -87,7 +105,7 @@ total_count
 
 # COMMAND ----------
 
-sample_size_for_each_stage = 700000 # this is the sample size for each round of AND
+sample_size_for_each_stage = 150000 # this is the sample size for each round of AND
 sample_per = sample_size_for_each_stage/total_count
 
 # 425,000 rows per run, 2 hr 15 min, r5d.4xlarge (driver), r5d.12xlarge (executor) (x10)
@@ -384,6 +402,145 @@ def check_block_vs_block(block_1_names_list, block_2_names_list):
                                            block_2_names_list[-1])
         # print(f"LAST {last_check}")
         if last_check:
+
+            # check to see if first name in last and last name in first
+            # if that is the case, need to do matching between first/last of both pairs
+            first_last_check = check_first_and_last(block_1_names_list[0], block_2_names_list[0], 
+                                                    block_1_names_list[-2], block_2_names_list[-2])
+            if first_last_check:
+                pass
+            else:
+                return 0
+
+            m1_check, more_to_go = match_block_names(block_1_names_list[2], block_1_names_list[3], block_2_names_list[2], 
+                                           block_2_names_list[3])
+            if m1_check:
+                if not more_to_go:
+                    return 1
+                m2_check, more_to_go = match_block_names(block_1_names_list[4], block_1_names_list[5], block_2_names_list[4], 
+                                                block_2_names_list[5])
+                
+                if m2_check:
+                    if not more_to_go:
+                        return 1
+                    m3_check, more_to_go = match_block_names(block_1_names_list[6], block_1_names_list[7], block_2_names_list[6], 
+                                                block_2_names_list[7])
+                    if m3_check:
+                        if not more_to_go:
+                            return 1
+                        m4_check, more_to_go = match_block_names(block_1_names_list[8], block_1_names_list[8], block_2_names_list[8], 
+                                                block_2_names_list[9])
+                        if m4_check:
+                            if not more_to_go:
+                                return 1
+                            m5_check, _ = match_block_names(block_1_names_list[10], block_1_names_list[11], block_2_names_list[10], 
+                                                block_2_names_list[11])
+                            if m5_check:
+                                return 1
+                            else:
+                                return 0
+                        else:
+                            return 0
+                    else:
+                        return 0
+                else:
+                    return 0
+            else:
+                return 0
+        else:
+            return 0
+    else:
+        swap_check = check_if_last_name_swapped_to_front_creates_match(block_1_names_list, block_2_names_list)
+        # print(f"SWAP {swap_check}")
+        if swap_check:
+            return 1
+        else:
+            return 0
+        
+def check_first_and_last(first_names_1, first_names_2, last_names_1, last_names_2):
+    """This function tries to catch times when the first and last name have been swapped
+    at some point and so an authors first name and last name would show up in both the list
+    of first names and the list of last names. This was causing authors to match with one name
+    matching even though the other name did not match"""
+    
+    if first_names_1 and first_names_2 and last_names_1 and last_names_2:
+        # check if both names in both lists
+        
+        if ((any(names in first_names_1 for names in last_names_1) and 
+            ((len(first_names_1) > 1) or (len(first_names_1) > 1))) or 
+            (any(names in first_names_2 for names in last_names_2) and 
+            ((len(first_names_2) > 1) or (len(first_names_1) > 2)))):
+            # if both names in both lists for both sets, each unique names need to match
+            if (len(first_names_1) == 2 and 
+                len(first_names_2) == 2 and 
+                len(last_names_1) == 2 and 
+                len(last_names_2) == 2):
+                name_set_1 = set(first_names_1 + last_names_1)
+                name_set_2 = set(first_names_2 + last_names_2)
+                if all(names in name_set_1 for names in name_set_2):
+                    return True
+                else:
+                    return False
+            else:
+                names_to_remove = []
+                for first_name in first_names_1:
+                    if ((first_name in first_names_2) and 
+                        (first_name in last_names_1) and 
+                        (first_name in last_names_2)):
+                        names_to_remove.append(first_name)
+                        
+                new_first_names_1 = [x for x in first_names_1 if x not in names_to_remove]
+                new_last_names_1 = [x for x in last_names_1 if x not in names_to_remove]
+                new_first_names_2 = [x for x in first_names_2 if x not in names_to_remove]
+                new_last_names_2 = [x for x in first_names_2 if x not in names_to_remove]
+                
+                names_are_good = 1
+                if new_first_names_1 and new_last_names_1 and new_first_names_2 and new_last_names_2:
+                    if (any(names in new_first_names_1 for names in new_first_names_2) or 
+                        any(names in new_last_names_1 for names in new_last_names_2)):
+                        return True
+                    else:
+                        return False
+                elif (not new_last_names_1) or (not new_last_names_2):
+                    if any(names in new_first_names_1 for names in new_first_names_2):
+                        return True
+                    else:
+                        return False
+                elif (not new_first_names_1) or (not new_first_names_2):
+                    if any(names in new_last_names_1 for names in new_last_names_2):
+                        return True
+                    else:
+                        return False
+                else:
+                    return True
+        else:
+            return True
+            
+    else:
+        return True
+
+def check_block_vs_block_reg(block_1_names_list, block_2_names_list):
+    
+    # check first names
+    first_check, _ = match_block_names(block_1_names_list[0], block_1_names_list[1], block_2_names_list[0], 
+                                    block_2_names_list[1])
+    # print(f"FIRST {first_check}")
+    
+    if first_check:
+        last_check, _ = match_block_names(block_1_names_list[-2], block_1_names_list[-1], block_2_names_list[-2], 
+                                           block_2_names_list[-1])
+        # print(f"LAST {last_check}")
+        if last_check:
+
+            # check to see if first name in last and last name in first
+            # if that is the case, need to do matching between first/last of both pairs
+            first_last_check = check_first_and_last(block_1_names_list[0], block_2_names_list[0], 
+                                                    block_1_names_list[-2], block_2_names_list[-2])
+            if first_last_check:
+                pass
+            else:
+                return 0
+
             m1_check, more_to_go = match_block_names(block_1_names_list[2], block_1_names_list[3], block_2_names_list[2], 
                                            block_2_names_list[3])
             if m1_check:
@@ -736,65 +893,6 @@ def get_name_match_list(name):
 
     return [list(set(x)) for x in [fn,fni,m1,m1i,m2,m2i,m3,m3i,m4,m4i,m5,m5i,ln,lni]]
 
-@udf(returnType=StringType())
-def transform_author_name(author):
-    if author.startswith("None "):
-        author = author.replace("None ", "")
-    elif author.startswith("Array "):
-        author = author.replace("Array ", "")
-
-    author = unicodedata.normalize('NFKC', author)
-    
-    author_name = HumanName(" ".join(author.split()))
-
-    if (author_name.title == 'Dr.') | (author_name.title == ''):
-        temp_new_author_name = f"{author_name.first} {author_name.middle} {author_name.last}"
-    else:
-        temp_new_author_name = f"{author_name.title} {author_name.first} {author_name.middle} {author_name.last}"
-
-    new_author_name = " ".join(temp_new_author_name.split())
-
-    author_names = new_author_name.split(" ")
-    
-    if (author_name.title != '') : 
-        final_author_name = new_author_name
-    else:
-        if len(author_names) == 1:
-            final_author_name = new_author_name
-        elif len(author_names) == 2:
-            if (len(author_names[1]) == 1) & (len(author_names[0]) > 3):
-                final_author_name = f"{author_names[1]} {author_names[0]}"
-            elif (len(author_names[1]) == 2) & (len(author_names[0]) > 3):
-                if (author_names[1][1]=="."):
-                    final_author_name = f"{author_names[1]} {author_names[0]}"
-                else:
-                    final_author_name = new_author_name
-            else:
-                final_author_name = new_author_name
-        elif len(author_names) == 3:
-            if (len(author_names[1]) == 1) & (len(author_names[2]) == 1) & (len(author_names[0]) > 3):
-                final_author_name = f"{author_names[1]} {author_names[2]} {author_names[0]}"
-            elif (len(author_names[1]) == 2) & (len(author_names[2]) == 2) & (len(author_names[0]) > 3):
-                if (author_names[1][1]==".") & (author_names[2][1]=="."):
-                    final_author_name = f"{author_names[1]} {author_names[2]} {author_names[0]}"
-                else:
-                    final_author_name = new_author_name
-            else:
-                final_author_name = new_author_name
-        elif len(author_names) == 4:
-            if (len(author_names[1]) == 1) & (len(author_names[2]) == 1) & (len(author_names[3]) == 1) & (len(author_names[0]) > 3):
-                final_author_name = f"{author_names[1]} {author_names[2]} {author_names[3]} {author_names[0]}"
-            elif (len(author_names[1]) == 2) & (len(author_names[2]) == 2) & (len(author_names[3]) == 2) & (len(author_names[0]) > 3):
-                if (author_names[1][1]==".") & (author_names[2][1]==".") & (author_names[3][1]=="."):
-                    final_author_name = f"{author_names[1]} {author_names[2]} {author_names[3]} {author_names[0]}"
-                else:
-                    final_author_name = new_author_name
-            else:
-                final_author_name = new_author_name
-        else:
-            final_author_name = new_author_name
-    return final_author_name
-
 @udf(returnType=ArrayType(StringType()))  
 def remove_current_author(author, coauthors):
     return [x for x in coauthors if x!=author][:250]
@@ -827,6 +925,10 @@ def create_author_name_list_from_list(name_lists):
 @udf(returnType=ArrayType(ArrayType(StringType())))
 def get_name_match_from_alternate_names(alt_names):
     trans_names = list(set([transform_name_for_search_reg(x) for x in alt_names]))
+    name_lists = [get_name_match_list_reg(x) for x in trans_names]
+    return create_author_name_list_from_list_reg(name_lists)
+
+def get_name_match_from_search_names(trans_names):
     name_lists = [get_name_match_list_reg(x) for x in trans_names]
     return create_author_name_list_from_list_reg(name_lists)
 
@@ -1384,6 +1486,66 @@ def get_author_alternate_names(init_alt_names_list):
     
     return list(set(final_list))
 
+@udf(returnType=IntegerType())
+def check_display_name_change(display_name_1, display_name_2):
+    if len(display_name_1) == len(display_name_2):
+        if transform_name_for_search_reg(display_name_1) == transform_name_for_search_reg(display_name_2):
+            return 0
+        else:
+            return 1
+    else:
+        return 1
+    
+@udf(returnType=ArrayType(ArrayType(ArrayType(StringType()))))
+def go_through_names_to_take_out_mismatches(data_to_cluster):
+    """
+    Goes through each row of data to make sure the names match up
+    """
+    df_to_cluster = pd.DataFrame(data_to_cluster, columns=['work_author_id_2','orcid_2','author_2'])
+    df_to_cluster['author_2'] = df_to_cluster['author_2'].apply(transform_name_for_search_reg)
+
+    orcid_names = df_to_cluster[df_to_cluster['orcid_2']!='']['author_2'].drop_duplicates().tolist()
+    df_non_orcid = df_to_cluster[(df_to_cluster['orcid_2']=='') & (~df_to_cluster['author_2'].isin(orcid_names))]['author_2'].value_counts().reset_index()
+
+    group_cluster_dict = {}
+
+    if df_non_orcid.shape[0] > 0:
+        df_non_orcid.columns = ['author_2','count']
+        df_non_orcid['name_len'] = df_non_orcid['author_2'].apply(len)
+
+        name_list_to_check_against = get_name_match_from_search_names(orcid_names)
+
+        for index, row in df_non_orcid.sort_values(['count','name_len'], ascending=False).iterrows():
+            if check_block_vs_block_reg(get_name_match_from_search_names([row.author_2]), name_list_to_check_against)==1:
+                orcid_names += [row.author_2]
+                name_list_to_check_against = get_name_match_from_search_names(orcid_names)
+            else:
+                added_to_group = 0
+                if not group_cluster_dict:
+                    work_author_ids_right = df_to_cluster[df_to_cluster['author_2']==row.author_2]['work_author_id_2'].tolist()
+                    group_cluster_dict[work_author_ids_right[0]] = {'trans_name_right': [row.author_2], 
+                                                                    'name_match_list': get_name_match_from_search_names([row.author_2]), 
+                                                                    'work_author_ids': work_author_ids_right}
+                else:
+                    name_list_right = get_name_match_list_reg(row.author_2)
+                    for key in group_cluster_dict.keys():
+                        if check_block_vs_block_reg(group_cluster_dict[key]['name_match_list'], name_list_right)==1:
+                            group_cluster_dict[key]['trans_name_right'].append(row.author_2)
+                            group_cluster_dict[key]['name_match_list'] = get_name_match_from_search_names(group_cluster_dict[key]['trans_name_right'])
+                            group_cluster_dict[key]['work_author_ids'] += df_to_cluster[df_to_cluster['author_2']==row.author_2]['work_author_id_2'].tolist()
+                            added_to_group = 1
+                            break
+                        else:
+                            pass
+                    if added_to_group==0:
+                        work_author_ids_right = df_to_cluster[df_to_cluster['author_2']==row.author_2]['work_author_id_2'].tolist()
+                        group_cluster_dict[work_author_ids_right[0]] = {'trans_name_right': [row.author_2],
+                                                                    'name_match_list': get_name_match_from_search_names([row.author_2]),
+                                                                    'work_author_ids': work_author_ids_right}
+        return [[[key], group_cluster_dict[key]['work_author_ids']] for key in group_cluster_dict.keys()]
+    else:
+        return [[[],[]]]
+
 # COMMAND ----------
 
 def create_new_author_table(new_rows_location):
@@ -1460,7 +1622,7 @@ bad_author_names = ['None Anonymous','Not specified','&NA; &NA;','Creator','None
                     'Unknown Unknown','Unknown Author','Unknown','Author Unknown',
                     'None, None','None','None None','None No authorship indicated',
                     'No authorship indicated','None &NA;','&Na; &Na;','&Na;',
-                    'Occdownload Gbif.Org','GBIF.Org User','et al. et al.']
+                    'Occdownload Gbif.Org','GBIF.Org User','et al. et al.',',']
 
 # COMMAND ----------
 
@@ -1483,13 +1645,37 @@ current_affs.cache().count()
 
 # COMMAND ----------
 
+combined_source_orcid = spark.read.parquet(f"{database_copy_save_path}/orcid/combined_source_orcid") \
+    .select(F.concat_ws("_", F.col('paper_id'), 
+                              F.col('author_sequence_number')).alias('work_author_id_2'), F.col('final_orcid').alias('orcid_2'), 'orcid_source')
+    
+combined_source_orcid.cache().count()
+
+# COMMAND ----------
+
 # save prod features table
 spark.read.parquet(f"{prod_save_path}/current_features_table/") \
-    .select('work_author_id_2', 'orcid_2', 'citations_2', 'institutions_2','paper_id_2','concepts_shorter_2', 'coauthors_shorter_2')\
+    .dropDuplicates()\
+    .select('work_author_id_2', 'citations_2', 'institutions_2','paper_id_2','concepts_shorter_2', 'coauthors_shorter_2')\
+    .join(combined_source_orcid.select('work_author_id_2', 'orcid_2'), on=['work_author_id_2'], how='left') \
+    .fillna("", subset=['orcid_2']) \
     .join(current_affs, on=['work_author_id_2'], how='inner') \
     .select('work_author_id_2', 'orcid_2', 'citations_2', 'institutions_2', 'author_2', 'paper_id_2', 'original_author', 
             'concepts_shorter_2', 'coauthors_shorter_2') \
-    .filter(~F.col('original_author').isin(bad_author_names)) \
+    .withColumn('author_2', F.trim(F.regexp_replace(F.col('author_2'), '&NA;', ''))) \
+    .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[0-9]', ' '), ' +', ' '))) \
+    .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[\*$!<>/?~@|+=$#&^%«»:;\_]', ' '), 
+                                                            ' +', ' '))) \
+    .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[\[\]\{\}\(\)\\\]', ''), ' +', ' '))) \
+    .withColumn('author_2', F.regexp_replace(F.col('author_2'), """^[,."`\-\‐\– ]+""", '')) \
+    .filter(~(F.col('original_author').isin(bad_author_names) | 
+              F.col('author_2').isin(bad_author_names) |
+              (F.lower(F.col('author_2')).contains("download")) | 
+              (F.lower(F.col('author_2')).contains("d.o.w.n.l.o.a.d")) |
+              (F.length(F.col('author_2'))>120) |
+              (F.trim(F.col('author_2'))==""))) \
+    .select('work_author_id_2', 'orcid_2', 'citations_2', 'institutions_2', 'author_2', 'paper_id_2', 'original_author', 
+            'concepts_shorter_2', 'coauthors_shorter_2') \
     .write.mode('overwrite') \
     .parquet(f"{temp_save_path}/current_features_table/")
 
@@ -1505,7 +1691,21 @@ spark.read.parquet(f"{prod_save_path}/current_features_table/") \
 ###############################################################################
 
 spark.read.parquet(f"{prod_save_path}/current_features_table/")\
-    .filter(F.col('original_author').isin(bad_author_names)) \
+    .dropDuplicates()\
+    .withColumn('author_2', F.trim(F.regexp_replace(F.col('author_2'), '&NA;', ''))) \
+    .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[0-9]', ' '), ' +', ' '))) \
+    .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[$!<>/?~@|+=$#&^%«»:;]', ' '), 
+                                                            ' +', ' '))) \
+    .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[\[\]\{\}\(\)\\\]', ''), ' +', ' '))) \
+    .withColumn('author_2', F.regexp_replace(F.col('author_2'), """^[,."`\-\*\‐\–\_ ]+""", '')) \
+    .filter((F.col('original_author').isin(bad_author_names) | 
+             F.col('author_2').isin(bad_author_names) |
+              (F.lower(F.col('author_2')).contains("download")) | 
+              (F.lower(F.col('author_2')).contains("d.o.w.n.l.o.a.d")) |
+              (F.length(F.col('author_2'))>120) |
+              (F.trim(F.col('author_2'))==""))) \
+    .select('work_author_id_2', 'orcid_2', 'citations_2', 'institutions_2', 'author_2', 'paper_id_2', 'original_author', 
+            'concepts_shorter_2', 'coauthors_shorter_2') \
     .write.mode('overwrite') \
     .parquet(f"{temp_save_path}/null_author_rows_to_filter_out/")
 
@@ -1517,11 +1717,17 @@ curr_features = spark.read.parquet(f"{temp_save_path}/current_features_table/")
 
 # COMMAND ----------
 
-curr_author_table = spark.read.parquet(f"{prod_save_path}/current_authors_table/")
+curr_features.filter(F.col('work_author_id_2').isin(['2954829117_2', '4240754231_1'])).show()
 
-# maybe delete this if not being used anymore?
-null_author_rows = spark.read.parquet(f"{temp_save_path}/null_author_rows_to_filter_out/")\
-    .select(F.col('work_author_id_2').alias('work_author_id')).distinct()
+# COMMAND ----------
+
+current_affs.join(curr_features, how='leftanti', on='work_author_id_2') \
+    .write.mode('overwrite') \
+    .parquet(f"{temp_save_path}/testing/affs_not_in_feature_table")
+
+# COMMAND ----------
+
+curr_author_table = spark.read.parquet(f"{prod_save_path}/current_authors_table/")
 
 # save prod authors table
 curr_author_table\
@@ -1533,10 +1739,21 @@ spark.read.parquet(f"{temp_save_path}/current_authors_table/").count()
 
 # COMMAND ----------
 
+mid_author_table = spark.read.parquet(f"{database_copy_save_path}/mid/author").dropDuplicates()\
+    .filter(F.col('author_id')>=5000000000) \
+    .filter(F.col('merge_into_id').isNull()).select('author_id')
+mid_author_table.cache().count()
+
+# COMMAND ----------
+
 # Getting author IDs that no longer have works associated with them
 old_author_id_counts = spark.read.parquet(f"{prod_save_path}/current_authors_table/") \
     .groupBy('author_id').count()
 old_author_id_counts.cache().count()
+
+# COMMAND ----------
+
+mid_author_table.join(old_author_id_counts, how='leftanti', on='author_id').count()
 
 # COMMAND ----------
 
@@ -1546,8 +1763,17 @@ new_author_id_counts.cache().count()
 
 # COMMAND ----------
 
-(old_author_id_counts.join(new_author_id_counts, on='author_id', how='leftanti') \
-    .select('author_id').dropDuplicates() \
+old_author_id_counts.join(new_author_id_counts, on='author_id', how='leftanti')\
+    .select('author_id')\
+    .union(mid_author_table.join(new_author_id_counts, how='leftanti', on='author_id').select('author_id'))\
+    .dropDuplicates().count()
+
+# COMMAND ----------
+
+(old_author_id_counts.join(new_author_id_counts, on='author_id', how='leftanti')
+    .select('author_id')
+    .union(mid_author_table.join(new_author_id_counts, how='leftanti', on='author_id').select('author_id'))
+    .dropDuplicates()
     .repartition(6)
     .write.format("jdbc") 
     .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
@@ -1609,6 +1835,17 @@ w1 = Window.partitionBy('work_author_id').orderBy(F.col('name_len').desc())
     .withColumn('concepts', transform_list_col_for_nulls_long(F.col('concepts')))
     .withColumn('institutions', transform_list_col_for_nulls_long(F.col('institutions')))
     .withColumn('author', transform_author_name(F.col('original_author')))
+    .withColumn('author', F.trim(F.regexp_replace(F.col('author'), '&NA;', ''))) \
+    .withColumn('author', F.trim(F.regexp_replace(F.regexp_replace(F.col('author'), '[0-9]', ' '), ' +', ' '))) \
+    .withColumn('author', F.trim(F.regexp_replace(F.regexp_replace(F.col('author'), '[$!<>/?~@|+=$#&^%«»:;]', ' '), 
+                                                            ' +', ' '))) \
+    .withColumn('author', F.trim(F.regexp_replace(F.regexp_replace(F.col('author'), '[\[\]\{\}\(\)\\\]', ''), ' +', ' '))) \
+    .withColumn('author', F.regexp_replace(F.col('author'), """^[,."`\-\*\‐\–\_ ]+""", '')) \
+    .filter(~(F.col('author').isin(bad_author_names) |
+              (F.lower(F.col('author')).contains("download")) | 
+              (F.lower(F.col('author')).contains("d.o.w.n.l.o.a.d")) |
+              (F.length(F.col('author'))>120) |
+              (F.trim(F.col('author'))==""))) \
     .withColumn('coauthors', transform_coauthors(F.col('coauthors')))
     .withColumn('coauthors', remove_current_author(F.col('author'),F.col('coauthors')))
     .withColumn('coauthors', coauthor_transform(F.col('coauthors')))
@@ -1667,7 +1904,12 @@ final_new_data \
 
 # COMMAND ----------
 
-final_new_data.sample(0.001).show(20)
+spark.read.parquet(f"{temp_save_path}/final_data_to_disambiguate/").count()
+
+
+# COMMAND ----------
+
+final_new_data.sample(0.1).show(20)
 
 # COMMAND ----------
 
@@ -1708,12 +1950,12 @@ print("Done getting stats")
 
 # COMMAND ----------
 
-# ids_to_change = ['2007620353_3','1965902888_2']
+# ids_to_change = ['2495086661_1', '4242421337_1']
 
 # features = spark.read.parquet(f"{temp_save_path}/current_features_table/") \
 #     .filter(F.col('work_author_id_2').isin(ids_to_change)) \
 #     .select(F.col('work_author_id_2').alias('work_author_id'), 'author_2') \
-#     .withColumn('new_author_id', F.lit(5012659032)) \
+#     .withColumn('new_author_id', F.lit(5099111335)) \
 #     .withColumn('request_type', F.lit('user')) \
 #     .withColumn('request_date', F.current_timestamp())
 
@@ -1721,6 +1963,7 @@ print("Done getting stats")
 
 # if features.count() == len(ids_to_change):
 #     (features.select('work_author_id','new_author_id','request_type','request_date') \
+#        .withColumn("partition_col", (F.random()*40+1).cast(IntegerType()))
 #        .write.format("jdbc") 
 #        .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
 #        .option("dbtable", 'authorships.add_works') 
@@ -1738,14 +1981,14 @@ print("Done getting stats")
 
 # COMMAND ----------
 
-# ids_to_change = ['2884227934_9']
+# ids_to_change = ['2401262275_1','2520840057_1']
 
 
 # features = spark.read.parquet(f"{temp_save_path}/current_features_table/") \
 #    .filter(F.col('work_author_id_2').isin(ids_to_change)) \
 #    .withColumn('groupby_num', F.lit(101)) \
 #    .groupby('groupby_num') \
-#    .agg(F.max(F.col('work_author_id_2')).alias##('work_author_id_for_cluster'), 
+#    .agg(F.max(F.col('work_author_id_2')).alias('work_author_id_for_cluster'), 
 #         F.collect_set(F.col('work_author_id_2')).alias('all_works_to_cluster')) \
 #    .select('work_author_id_for_cluster', 
 #            F.explode('all_works_to_cluster').alias('all_works_to_cluster')) \
@@ -1755,6 +1998,7 @@ print("Done getting stats")
 # print(features.cache().count())
 
 # (features.select('work_author_id_for_cluster','all_works_to_cluster','request_type','request_date') \
+#    .withColumn("partition_col", (F.random()*40+1).cast(IntegerType()))
 #    .write.format("jdbc") 
 #    .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
 #    .option("dbtable", 'authorships.overmerged_authors') 
@@ -1770,7 +2014,8 @@ print("Done getting stats")
 
 # COMMAND ----------
 
-if temp_new_data.filter(F.col('created_date')>authors_table_last_date).count() <= 0:
+# if temp_new_data.filter(F.col('created_date')>authors_table_last_date).count() <= 0:
+if spark.read.parquet(f"{temp_save_path}/final_data_to_disambiguate/").count() == 0:
     print(f"{datetime.datetime.now().strftime('%H:%M')}: NO NEW DATA")
     pass
 else:
@@ -2003,6 +2248,164 @@ else:
 
         author_names_match = spark.read.parquet(f"{temp_save_path}/temp_author_names_match/init_2/")
 
+    ##################################### OVERMERGED AUTHORS ###########################################
+
+    # Check for overmerged authors to fix
+    secret = get_secret()
+
+    overmerged_clusters_raw = (spark.read
+        .format("postgresql")
+        .option("dbtable", "authorships.overmerged_authors")
+        .option("host", secret['host'])
+        .option("port", secret['port'])
+        .option("database", secret['dbname'])
+        .option("user", secret['username'])
+        .option("password", secret['password'])
+        .option("partitionColumn", "partition_col")
+        .option("lowerBound", 1)
+        .option("upperBound", 40)
+        .option("numPartitions", 20)
+        .load())
+
+    try:
+        overmerged_clusters_fixed = (spark.read
+            .format("postgresql")
+            .option("dbtable", "authorships.overmerged_authors_fixed")
+            .option("host", secret['host'])
+            .option("port", secret['port'])
+            .option("database", secret['dbname'])
+            .option("user", secret['username'])
+            .option("password", secret['password'])
+            .option("partitionColumn", "partition_col")
+            .option("lowerBound", 1)
+            .option("upperBound", 40)
+            .option("numPartitions", 20)
+            .load())
+    except:
+        overmerged_clusters_fixed = spark.sparkContext.emptyRDD()\
+            .toDF(schema=StructType([StructField("work_author_id_for_cluster", StringType()),
+                                     StructField("all_works_to_cluster", StringType())]))
+    
+    w_om = Window.partitionBy(['work_author_id_for_cluster','all_works_to_cluster']).orderBy(F.col('request_date').desc())
+    overmerged_clusters = overmerged_clusters_raw\
+        .withColumn('request_rank', F.row_number().over(w_om)) \
+        .filter(F.col('request_rank') == 1) \
+        .select('work_author_id_for_cluster','all_works_to_cluster') \
+        .join(overmerged_clusters_fixed.select('work_author_id_for_cluster','all_works_to_cluster'), 
+              how='leftanti', on=['work_author_id_for_cluster','all_works_to_cluster']) \
+        .select(F.col('work_author_id_for_cluster').alias('work_author_id'),'all_works_to_cluster') \
+        .groupBy('work_author_id') \
+        .agg(F.collect_set(F.col('all_works_to_cluster')).alias('work_author_ids'))
+
+    if overmerged_clusters.count() == 0:
+        print(f"{datetime.datetime.now().strftime('%H:%M')}: No overmerges to fix!")
+    elif overmerged_clusters.count() > 0:
+        print(f"{datetime.datetime.now().strftime('%H:%M')}: Overmerge clusters to fix: {overmerged_clusters.count()}")
+
+        new_max_id = int(temp_authors_table.select(F.max(F.col('author_id'))).collect()[0][0])
+        
+        w2 = Window.orderBy(F.col('work_author_id'))
+
+        # Getting work_author_ids that will be in new cluster
+        ids_to_skip = overmerged_clusters.select(F.explode('work_author_ids').alias('work_author_id_2'))
+
+        # Getting the new cluster number
+        overmerged_clusters.select('work_author_id','work_author_ids')\
+            .withColumn('temp_cluster_num', F.row_number().over(w2)) \
+            .withColumn('author_id', F.lit(new_max_id) + F.col('temp_cluster_num')) \
+            .select(F.explode('work_author_ids').alias('work_author_id'), 'author_id') \
+            .write.mode('overwrite') \
+            .parquet(f"{temp_save_path}/new_rows_for_author_table/overmerged_author_clusters/")
+
+        # Filtering out changed work_author_ids from temp_authors_table
+        temp_authors_table = temp_authors_table.alias('new_temp_authors_overmerge_clusters').join(ids_to_skip, how='leftanti', on='work_author_id_2')
+
+        # Making all tables current
+        new_loc = 'overmerged_author_clusters'
+
+        _ = create_new_author_table(new_loc)
+        print(f"{datetime.datetime.now().strftime('%H:%M')}: New authors table created")
+        temp_authors_table = spark.read.parquet(f"{temp_save_path}/temp_authors_table/{new_loc}/")
+
+    ########################################## MERGE ORCIDS ##################################################
+
+    # get group of ORCIDs with multiple author_ids
+    orcid_multiple = temp_authors_table.alias('orcid_multiple').filter(F.col('orcid_2')!='').dropDuplicates(subset=['author_id','orcid_2']) \
+        .groupBy('orcid_2').count().filter(F.col('count')>1).select('orcid_2')
+
+    orcid_multiple.cache().count()
+
+    if orcid_multiple.count() > 0:
+        print(f"{datetime.datetime.now().strftime('%H:%M')}: {orcid_multiple.count()} ORCIDs found with multiple profiles")
+
+        # sort by works count (desc) and then by author ID to get final author ID for that ORCID
+        w_mul_orc = Window.partitionBy('orcid_2').orderBy(F.col('count').desc(), F.col('author_id'))
+        author_ids_to_use = temp_authors_table.alias('orcid_to_use').join(orcid_multiple.select('orcid_2'), on='orcid_2', how='inner')\
+            .groupBy(['orcid_2','author_id']).count() \
+            .withColumn('rank', F.row_number().over(w_mul_orc)) \
+            .filter(F.col('rank') == 1)
+
+        # for each ORCID, get all work_author_ids, groupby ones that have ORCID attached and for the remainder, run a modified leftovers function 
+        # where it tries to match on name only
+        temp_authors_table_orcid = temp_authors_table.alias('new_orcid_clusters').join(author_ids_to_use.select('orcid_2',F.col('author_id').alias('new_author_id')), 
+                                                                                        on='orcid_2', how='inner') \
+            .withColumn('final_author_id', F.when(F.col('new_author_id').isNotNull(), F.col('new_author_id')).otherwise(F.col('author_id'))) \
+            .select('work_author_id_2', 'final_author_id')
+
+        rows_to_remove = temp_authors_table_orcid.join(temp_features_table, how='inner', on='work_author_id_2') \
+            .select(F.col('final_author_id').alias('author_id'), F.array([F.col('work_author_id_2'), F.col('orcid_2'), F.col('author_2')]).alias('works')) \
+            .groupBy('author_id').agg(F.collect_list(F.col('works')).alias('works_to_check')) \
+            .withColumn('work_author_to_group_mapping', go_through_names_to_take_out_mismatches(F.col('works_to_check'))) \
+            .select('author_id',F.explode('work_author_to_group_mapping').alias('work_author_to_group_mapping')) \
+            .select('author_id', 
+                    F.col('work_author_to_group_mapping').getItem(0).getItem(0).alias('group_cluster_id'), 
+                    F.col('work_author_to_group_mapping').getItem(1).alias('work_author_id_left')) \
+            .select('author_id', 'group_cluster_id', F.col('work_author_id_left').alias('work_author_ids')) \
+            .filter(F.col('group_cluster_id').isNotNull())
+
+        rows_to_remove.cache().count()
+
+        # writing out rows for testing
+        rows_to_remove \
+            .write.mode('overwrite') \
+            .parquet(f"{temp_save_path}/testing_new_code/rows_to_remove_from_cluster_for_name_mismatch/")
+
+        # write mid.author changes
+        temp_authors_table.join(author_ids_to_use.select('orcid_2',F.col('author_id').alias('new_author_id')), how='inner', on='orcid_2') \
+            .dropDuplicates(subset=['author_id','new_author_id']) \
+            .filter(F.col('author_id') != F.col('new_author_id')) \
+            .select('author_id', 'new_author_id') \
+            .write.mode('overwrite')\
+            .parquet(f"{prod_save_path}/author_merges_to_combine_orcid/")
+
+        new_max_id = int(temp_authors_table.select(F.max(F.col('author_id'))).collect()[0][0])
+            
+        w2 = Window.orderBy(F.col('group_cluster_id'))
+
+        # Getting work_author_ids that will be in new cluster
+        ids_to_skip = rows_to_remove.select(F.explode('work_author_ids').alias('work_author_id_2'))
+
+        # Getting the new cluster number
+        rows_to_remove.select('group_cluster_id','work_author_ids')\
+            .withColumn('temp_cluster_num', F.row_number().over(w2)) \
+            .withColumn('author_id', F.lit(new_max_id) + F.col('temp_cluster_num')) \
+            .select(F.explode('work_author_ids').alias('work_author_id'), 'author_id') \
+            .write.mode('overwrite') \
+            .parquet(f"{temp_save_path}/new_rows_for_author_table/leftovers_from_merging_orcid_author_clusters/")
+
+        # Filtering out changed work_author_ids from temp_authors_table
+        temp_authors_table = temp_authors_table.alias('new_temp_authors_overmerge_clusters').join(ids_to_skip, how='leftanti', on='work_author_id_2') \
+            .join(author_ids_to_use.select('orcid_2',F.col('author_id').alias('new_author_id')), on='orcid_2', how='left') \
+            .withColumn('final_author_id', F.when(F.col('new_author_id').isNotNull(), F.col('new_author_id')).otherwise(F.col('author_id'))) \
+            .select('work_author_id_2', F.col('final_author_id').alias('author_id'))
+
+        # Making all tables current
+        new_loc = 'leftovers_from_merging_orcid_author_clusters'
+
+        _ = create_new_author_table(new_loc)
+        print(f"{datetime.datetime.now().strftime('%H:%M')}: New authors table created")
+        temp_authors_table = spark.read.parquet(f"{temp_save_path}/temp_authors_table/{new_loc}/")
+
     ########################################### ORCID MATCH #####################################################
 
     # Getting ORCID matches
@@ -2046,6 +2449,40 @@ else:
         work_to_clusters_removed = spark.sparkContext.emptyRDD()\
             .toDF(schema=StructType([StructField("work_author_id", StringType()),
                                      StructField("author_id", LongType())]))
+            
+    # if overmerged_clusters.count() == 0:
+    #     print(f"{datetime.datetime.now().strftime('%H:%M')}: No overmerges to fix!")
+    # elif overmerged_clusters.count() > 0:
+    #     print(f"{datetime.datetime.now().strftime('%H:%M')}: Overmerge clusters to fix: {overmerged_clusters.count()}")
+
+    #     if spark.read.parquet(f"{temp_save_path}/new_rows_for_author_table/new_author_clusters/").count() > 0:
+    #         new_max_id = int(spark.read.parquet(f"{temp_save_path}/new_rows_for_author_table/new_author_clusters/")
+    #                         .select(F.max(F.col('author_id'))).collect()[0][0])
+    #     else:
+    #         new_max_id = int(temp_authors_table.select(F.max(F.col('author_id'))).collect()[0][0])
+        
+    #     w2 = Window.orderBy(F.col('work_author_id'))
+
+    #     # Getting work_author_ids that will be in new cluster
+    #     ids_to_skip = overmerged_clusters.select(F.explode('work_author_ids').alias('work_author_id_2'))
+
+    #     # Getting the new cluster number
+    #     overmerged_clusters.select('work_author_id','work_author_ids')\
+    #         .withColumn('temp_cluster_num', F.row_number().over(w2)) \
+    #         .withColumn('author_id', F.lit(new_max_id) + F.col('temp_cluster_num')) \
+    #         .select(F.explode('work_author_ids').alias('work_author_id'), 'author_id') \
+    #         .write.mode('append') \
+    #         .parquet(f"{temp_save_path}/new_rows_for_author_table/overmerged_authors/")
+
+    #     # Filtering out changed work_author_ids from temp_authors_table
+    #     temp_authors_table = temp_authors_table.join(ids_to_skip, how='leftanti', on='work_author_id_2').alias('new_temp_authors_new_clusters')
+
+    #     # Making all tables current
+    #     new_loc = 'overmerged_author_clusters'
+
+    #     _ = create_new_author_table(new_loc)
+    #     print(f"{datetime.datetime.now().strftime('%H:%M')}: New authors table created")
+    #     temp_authors_table = spark.read.parquet(f"{temp_save_path}/temp_authors_table/{new_loc}/")
             
     ####################################### NAME MATCH ROUND 1 ################################################
             
@@ -2261,88 +2698,6 @@ else:
         .write.mode('overwrite') \
         .parquet(f"{temp_save_path}/new_rows_for_author_table/new_author_clusters/")
 
-    ###########################################################################
-
-    # Check for overmerged authors to fix
-    secret = get_secret()
-
-    overmerged_clusters_raw = (spark.read
-        .format("postgresql")
-        .option("dbtable", "authorships.overmerged_authors")
-        .option("host", secret['host'])
-        .option("port", secret['port'])
-        .option("database", secret['dbname'])
-        .option("user", secret['username'])
-        .option("password", secret['password'])
-        .load())
-
-    try:
-        overmerged_clusters_fixed = (spark.read
-            .format("postgresql")
-            .option("dbtable", "authorships.overmerged_authors_fixed")
-            .option("host", secret['host'])
-            .option("port", secret['port'])
-            .option("database", secret['dbname'])
-            .option("user", secret['username'])
-            .option("password", secret['password'])
-            .load())
-    except:
-        overmerged_clusters_fixed = spark.sparkContext.emptyRDD()\
-            .toDF(schema=StructType([StructField("work_author_id_for_cluster", StringType()),
-                                     StructField("all_works_to_cluster", StringType())]))
-    
-
-    overmerged_clusters = overmerged_clusters_raw.select('work_author_id_for_cluster','all_works_to_cluster') \
-        .join(overmerged_clusters_fixed.select('work_author_id_for_cluster','all_works_to_cluster'), 
-              how='leftanti', on=['work_author_id_for_cluster','all_works_to_cluster']) \
-        .select(F.col('work_author_id_for_cluster').alias('work_author_id'),'all_works_to_cluster') \
-        .groupBy('work_author_id') \
-        .agg(F.collect_set(F.col('all_works_to_cluster')).alias('work_author_ids'))
-
-    if overmerged_clusters.count() == 0:
-        print(f"{datetime.datetime.now().strftime('%H:%M')}: No overmerges to fix!")
-    elif overmerged_clusters.count() > 0:
-        print(f"{datetime.datetime.now().strftime('%H:%M')}: Overmerge clusters to fix: {overmerged_clusters.count()}")
-
-        if spark.read.parquet(f"{temp_save_path}/new_rows_for_author_table/new_author_clusters/").count() > 0:
-            new_max_id = int(spark.read.parquet(f"{temp_save_path}/new_rows_for_author_table/new_author_clusters/")
-                            .select(F.max(F.col('author_id'))).collect()[0][0])
-        else:
-            new_max_id = max_id
-        
-        w2 = Window.orderBy(F.col('work_author_id'))
-
-        # Getting work_author_ids that will be in new cluster
-        ids_to_skip = overmerged_clusters.select(F.explode('work_author_ids').alias('work_author_id'))\
-            .rdd.flatMap(lambda x: x).collect()
-
-        # Getting the new cluster number
-        overmerged_clusters.select('work_author_id','work_author_ids')\
-            .withColumn('temp_cluster_num', F.row_number().over(w2)) \
-            .withColumn('author_id', F.lit(new_max_id) + F.col('temp_cluster_num')) \
-            .select(F.explode('work_author_ids').alias('work_author_id'), 'author_id') \
-            .write.mode('append') \
-            .parquet(f"{temp_save_path}/new_rows_for_author_table/new_author_clusters/")
-
-        # Filtering out changed work_author_ids from temp_authors_table
-        temp_authors_table = temp_authors_table.filter(~F.col('work_author_id_2').isin(ids_to_skip))\
-            .alias('new_temp_authors_new_clusters')
-
-        # Writing out changed data to authorships.overmerged_authors_fixed
-        (overmerged_clusters.select(F.col('work_author_id').alias('work_author_id_for_cluster'),'work_author_ids')
-            .select('work_author_id_for_cluster', F.explode('work_author_ids').alias('all_works_to_cluster'))
-            .withColumn("modified_date", F.current_timestamp())
-            .repartition(6)
-            .write.format("jdbc") 
-            .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
-            .option("dbtable", 'authorships.overmerged_authors_fixed') 
-            .option("user", secret['username']) 
-            .option("password", secret['password']) 
-            .option("driver", "org.postgresql.Driver") 
-            .mode("append") 
-            .save())
-
-    ###########################################################################
 
     # Making all tables current
     new_loc = 'new_author_clusters'
@@ -2453,12 +2808,12 @@ else:
     spark.read.parquet(f"{temp_save_path}/new_rows_for_author_table/new_author_clusters/") \
         .select('work_author_id', 'author_id') \
         .groupBy('author_id').agg(F.count(F.col('work_author_id')).alias('count'), 
-                                  F.collect_set(F.col('work_author_id')).alias('new_work_author_ids'))\
+                                    F.collect_set(F.col('work_author_id')).alias('new_work_author_ids'))\
         .filter(F.col('count')<=5).select(F.col('author_id').alias('new_author_id'),'new_work_author_ids', 
-                                         F.explode('new_work_author_ids').alias('work_author_id_2')) \
+                                            F.explode('new_work_author_ids').alias('work_author_id_2')) \
         .write.mode('overwrite')\
         .parquet(f"{temp_save_path}/testing_new_clusters_for_old_id/")
-    
+
     new_clusters = spark.read.parquet(f"{temp_save_path}/testing_new_clusters_for_old_id/")
     new_clusters.cache().count()
 
@@ -2468,18 +2823,24 @@ else:
         .select('work_author_id_2') \
         .write.mode('overwrite')\
         .parquet(f"{temp_save_path}/testing_new_clusters_work_authors_to_check/")
-    
+
     new_clusters_to_check = spark.read.parquet(f"{temp_save_path}/testing_new_clusters_work_authors_to_check/")
     new_clusters_to_check.cache().count()
 
-    spark.read.parquet(f"{temp_save_path}/current_authors_table/") \
+    old_cluster_to_check = spark.read.parquet(f"{temp_save_path}/current_authors_table/") \
         .select('work_author_id', 'author_id') \
         .join(new_clusters_to_check.select(F.col('work_author_id_2').alias('work_author_id')), how='inner', on='work_author_id') \
-        .groupby('author_id').agg(F.count(F.col('work_author_id')).alias('count'), 
-                                  F.collect_set(F.col('work_author_id')).alias('old_work_author_ids'))\
+        .select(F.col('work_author_id').alias('work_author_id_to_check'), 'author_id')
+    old_cluster_to_check.cache().count()
+
+    spark.read.parquet(f"{temp_save_path}/current_authors_table/") \
+        .select('work_author_id', 'author_id') \
+        .join(old_cluster_to_check, how='inner', on='author_id') \
+        .groupby(['author_id','work_author_id_to_check']).agg(F.count(F.col('work_author_id')).alias('count'), 
+                                    F.collect_set(F.col('work_author_id')).alias('old_work_author_ids'))\
         .filter(F.col('count')<=5)\
         .select(F.col('author_id').alias('old_author_id'),'old_work_author_ids', 
-                F.explode('old_work_author_ids').alias('work_author_id_2')) \
+                F.col('work_author_id_to_check').alias('work_author_id_2')) \
         .write.mode('overwrite')\
         .parquet(f"{temp_save_path}/testing_old_clusters_for_new_id/")
 
@@ -2490,7 +2851,7 @@ else:
         .join(old_clusters, how='inner', on='work_author_id_2') \
         .join(new_clusters, how='inner', on='work_author_id_2') \
         .withColumn('final_author_id', check_new_clusters_for_old_id(F.col('old_author_id'), F.col('new_author_id'), 
-                                                                     F.col('old_work_author_ids'), F.col('new_work_author_ids'))) \
+                                                                        F.col('old_work_author_ids'), F.col('new_work_author_ids'))) \
         .select('work_author_id_2','new_author_id', 'final_author_id') \
         .write.mode('overwrite')\
         .parquet(f"{temp_save_path}/final_author_ids_for_new_clusters/")
@@ -2549,12 +2910,18 @@ else:
     # take final author table, compare to init table (all columns) to see if anything has been changed
     compare_tables = final_author_table.join(init_author_table, how='inner', on='work_author_id') \
         .withColumn('orcid_compare', F.when(F.col('orcid_1')==F.col('orcid_2'), 0).otherwise(1)) \
-        .withColumn('display_name_compare', F.when(F.col('display_name_1')==F.col('display_name_2'), 0).otherwise(1)) \
+        .withColumn('display_name_compare', check_display_name_change('display_name_1', 'display_name_2')) \
         .withColumn('author_id_compare', F.when(F.col('author_id_1')==F.col('author_id_2'), 0).otherwise(1)) \
         .withColumn('alternate_names_compare', check_list_vs_list(F.col('alternate_names_1'), 
                                                                     F.col('alternate_names_2'))) \
         .withColumn('total_changes', F.col('orcid_compare') + F.col('display_name_compare') + 
                                 F.col('author_id_compare') + F.col('alternate_names_compare'))
+        
+    compare_tables.cache().count()
+
+    compare_tables \
+        .write.mode('overwrite')\
+        .parquet(f"{temp_save_path}/final_author_table_for_testing/")
     
     # if not, write out those rows to a folder
     compare_tables.filter(F.col('total_changes')==0) \
@@ -2604,10 +2971,10 @@ else:
             .write.mode('overwrite') \
             .parquet(f"{temp_save_path}/work_authors_changed_clusters/")
 
-        print("Author cluster changes: ", spark.read.parquet(f"{temp_save_path}/work_authors_changed_clusters/").count())
+        print(f"{datetime.datetime.now().strftime('%H:%M')}: Author cluster changes: ", spark.read.parquet(f"{temp_save_path}/work_authors_changed_clusters/").count())
     
-    # Writing out rows that have changed author IDs (merge table)
-    compare_tables.join(works_authors_to_remove, how='inner', on='work_author_id') \
+        # Writing out rows that have changed author IDs (merge table)
+        compare_tables.join(works_authors_to_remove, how='inner', on='work_author_id') \
             .filter(F.col('author_id_1').isNotNull()) \
             .filter(F.col('author_id_1')!=F.col('author_id_2')) \
             .select('work_author_id', 
@@ -2654,6 +3021,16 @@ else:
         .mode("overwrite") 
         .save())
     
+    (final_author_table.join(init_author_table.select('work_author_id'), how='leftanti', on='work_author_id') 
+        .select('work_author_id', F.col('author_id_2').alias('author_id'), 
+                F.col('display_name_2').alias('display_name'), 
+                F.col('alternate_names_2').alias('alternate_names'), 
+                F.col('orcid_2').alias('orcid'))
+        .withColumn("created_date", F.current_timestamp()) 
+        .withColumn("modified_date", F.current_timestamp())
+        .withColumn('author_id_changed', F.lit(True))
+        .write.mode('overwrite').parquet(f"{prod_save_path}/current_authors_modified_table"))
+    
     print(f"{datetime.datetime.now().strftime('%H:%M')}: authorships.authors_modified write 1 done")
 
     # Getting rows that changed author IDs and writing to authorships.authors_modified
@@ -2674,6 +3051,15 @@ else:
         .mode("append")
         .save())
     
+    (compare_tables.filter(F.col('author_id_compare')==1).filter(F.col('total_changes')>0)
+            .select('work_author_id', F.col('author_id_2').alias('author_id'), 
+                    F.col('display_name_2').alias('display_name'), 
+                    F.col('alternate_names_2').alias('alternate_names'), 
+                    F.col('orcid_2').alias('orcid'), 'created_date') 
+        .withColumn("modified_date", F.current_timestamp())
+        .withColumn('author_id_changed', F.lit(True))
+        .write.mode('append').parquet(f"{prod_save_path}/current_authors_modified_table"))
+    
     print(f"{datetime.datetime.now().strftime('%H:%M')}: authorships.authors_modified write 2 done")
 
     # Getting any new null authors and writing to authorships.authors_modified
@@ -2692,10 +3078,45 @@ else:
             .mode("append") 
             .save())
         
+        (null_authors_diff
+            .select(F.col('work_author_id_2').alias('work_author_id'), 'author_id', 
+                        'display_name', 'alternate_names', F.col('orcid_2').alias('orcid'), 
+                        'created_date','modified_date','author_id_changed')
+            .write.mode('append').parquet(f"{prod_save_path}/current_authors_modified_table"))
+        
     print(f"{datetime.datetime.now().strftime('%H:%M')}: authorships.authors_modified write 3 done")
 
     # Getting any row changes to author ID metadata (but not author ID) and writing to authorships.authors_modified
-    (compare_tables.filter(F.col('author_id_compare')==0).filter(F.col('total_changes')>0)
+    (compare_tables.filter(F.col('author_id_compare')==0).filter(F.col('total_changes')>0).filter((F.col('orcid_compare')==1) | 
+                                                                                                  (F.col('display_name_compare')==1))
+            .select('work_author_id', F.col('author_id_2').alias('author_id'), 
+                    F.col('display_name_2').alias('display_name'), 
+                    F.col('alternate_names_2').alias('alternate_names'), 
+                    F.col('orcid_2').alias('orcid'), 'created_date') 
+        .withColumn("modified_date", F.current_timestamp()) 
+        .withColumn('author_id_changed', F.lit(True))
+        .repartition(36)
+        .write.format("jdbc")
+        .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
+        .option("dbtable", 'authorships.authors_modified')
+        .option("user", secret['username'])
+        .option("password", secret['password'])
+        .option("driver", "org.postgresql.Driver")
+        .mode("append")
+        .save())
+    
+    (compare_tables.filter(F.col('author_id_compare')==0).filter(F.col('total_changes')>0).filter((F.col('orcid_compare')==1) | 
+                                                                                                 (F.col('display_name_compare')==1))
+            .select('work_author_id', F.col('author_id_2').alias('author_id'), 
+                    F.col('display_name_2').alias('display_name'), 
+                    F.col('alternate_names_2').alias('alternate_names'), 
+                    F.col('orcid_2').alias('orcid'), 'created_date') 
+        .withColumn("modified_date", F.current_timestamp()) 
+        .withColumn('author_id_changed', F.lit(True))
+        .write.mode('append').parquet(f"{prod_save_path}/current_authors_modified_table"))
+    
+    (compare_tables.filter(F.col('author_id_compare')==0).filter(F.col('total_changes')>0).filter((F.col('orcid_compare')==0) & 
+                                                                                                  (F.col('display_name_compare')==0))
             .select('work_author_id', F.col('author_id_2').alias('author_id'), 
                     F.col('display_name_2').alias('display_name'), 
                     F.col('alternate_names_2').alias('alternate_names'), 
@@ -2711,6 +3132,16 @@ else:
         .option("driver", "org.postgresql.Driver")
         .mode("append")
         .save())
+    
+    (compare_tables.filter(F.col('author_id_compare')==0).filter(F.col('total_changes')>0).filter((F.col('orcid_compare')==0) & 
+                                                                                                  (F.col('display_name_compare')==0))
+            .select('work_author_id', F.col('author_id_2').alias('author_id'), 
+                    F.col('display_name_2').alias('display_name'), 
+                    F.col('alternate_names_2').alias('alternate_names'), 
+                    F.col('orcid_2').alias('orcid'), 'created_date') 
+        .withColumn("modified_date", F.current_timestamp()) 
+        .withColumn('author_id_changed', F.lit(False))
+        .write.mode('append').parquet(f"{prod_save_path}/current_authors_modified_table"))
     
     if spark.read.parquet(f"{temp_save_path}/temp_authors_to_change_table/").count() > 0:
         prev_disam_authors = spark.read.parquet(f"{temp_save_path}/temp_authors_to_change_table/")
@@ -2733,6 +3164,74 @@ else:
         .mode("append")
         .save())
 
+        (spark.read.parquet(f"{temp_save_path}/final_author_table_part/no_changes/")\
+                .join(prev_disam_authors, how='inner', on='work_author_id').dropDuplicates(subset=['work_author_id'])
+                .select('work_author_id', F.col('author_id'), 
+                        F.col('display_name'), 
+                        F.col('alternate_names'), 
+                        F.col('orcid'), 'created_date') 
+            .withColumn("modified_date", F.current_timestamp()) 
+            .withColumn('author_id_changed', F.lit(True))
+            .write.mode('append').parquet(f"{prod_save_path}/current_authors_modified_table"))
+
+    if overmerged_clusters.count() == 0:
+        print(f"{datetime.datetime.now().strftime('%H:%M')}: Don't need to write to overmerge_fixed table!")
+    elif overmerged_clusters.count() > 0:
+        # Writing out changed data to authorships.overmerged_authors_fixed
+        print(f"{datetime.datetime.now().strftime('%H:%M')}: Writing fixed overmerges to table")
+        (overmerged_clusters.select(F.col('work_author_id').alias('work_author_id_for_cluster'),'work_author_ids')
+            .select('work_author_id_for_cluster', F.explode('work_author_ids').alias('all_works_to_cluster'))
+            .withColumn("modified_date", F.current_timestamp())
+            .withColumn("partition_col", (F.rand()*40+1).cast(IntegerType()))
+            .repartition(6)
+            .write.format("jdbc") 
+            .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
+            .option("dbtable", 'authorships.overmerged_authors_fixed') 
+            .option("user", secret['username']) 
+            .option("password", secret['password']) 
+            .option("driver", "org.postgresql.Driver") 
+            .mode("append") 
+            .save())
+
+    # Writing out final table to show where ORCID came from for each work author
+    (spark.read.parquet(f"{temp_save_path}/final_author_table_part/*").select('work_author_id', 'orcid').filter(F.col('orcid')!='')
+        .join(combined_source_orcid.select(F.col('work_author_id_2').alias('work_author_id'), 'orcid_source'), 
+              on='work_author_id', how='left')
+        .select(F.split(F.col('work_author_id'), '_').alias('work_author_id'), 'orcid','orcid_source')
+        .select(F.col('work_author_id').getItem(0).cast(LongType()).alias('paper_id'), 
+                F.col('work_author_id').getItem(1).cast(IntegerType()).alias('author_sequence_number'), 'orcid', 'orcid_source')
+        .withColumn('evidence', F.when(F.col('orcid_source').isNotNull(), F.col('orcid_source')).otherwise(F.lit('author_disambiguation')))
+        .select('paper_id','author_sequence_number', F.col('orcid'), 'evidence')
+        .repartition(20)
+        .write.format("jdbc") 
+        .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
+        .option("dbtable", 'orcid.final_orcid') 
+        .option("user", secret['username']) 
+        .option("password", secret['password']) 
+        .option("driver", "org.postgresql.Driver") 
+        .option("truncate", True)
+        .mode("overwrite") 
+        .save())
+    
+    # Future code to write out author IDs and associated ORCID
+    # (spark.read.parquet(f"{temp_save_path}/final_author_table_part/*")
+    # .select('author_id', 'orcid').filter(F.col('orcid')!='').dropDuplicates()
+    # .groupBy(['orcid']).agg(F.count(F.col('author_id')).alias('count'), 
+    #                                 F.collect_list(F.col('author_id')).alias('author_ids')).filter(F.col('count')==1)
+    # .select(F.col('author_ids').getItem(0).alias('author_id'), 'orcid')
+    # .withColumn('evidence', F.lit('author_disambiguation'))
+    # .withColumn('updated', F.current_timestamp())
+    # .select('author_id', 'orcid', 'updated', 'evidence')
+    # .repartition(20)
+    # .write.format("jdbc") 
+    # .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
+    # .option("dbtable", 'mid.author_orcid') 
+    # .option("user", secret['username']) 
+    # .option("password", secret['password']) 
+    # .option("driver", "org.postgresql.Driver") 
+    # .option("truncate", True)
+    # .mode("overwrite") 
+    # .save())
 
     #######################################################################################################
     #######################################################################################################
@@ -2823,6 +3322,14 @@ else:
         .parquet(f"{prod_save_path}/current_author_names_match/")
 
     print(f"{datetime.datetime.now().strftime('%H:%M')}: Final author name match table written to S3")
+
+# COMMAND ----------
+
+temp_features_table.filter(F.col('work_author_id_2').isin(['2954829117_2', '4240754231_1'])).show()
+
+# COMMAND ----------
+
+spark.read.parquet(f"{temp_save_path}/final_author_table_part/*").filter(F.col('work_author_id').isin(['2954829117_2', '4240754231_1'])).show()
 
 # COMMAND ----------
 
