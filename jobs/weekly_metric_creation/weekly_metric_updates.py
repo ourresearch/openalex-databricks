@@ -248,8 +248,4 @@ _ = restart_dynos(heroku_secret['heroku_token'], dynos_to_shutdown, curr_q)
 
 # COMMAND ----------
 
-# MAGIC %md ## FWCI
-
-# COMMAND ----------
-
 

@@ -1637,7 +1637,7 @@ current_affs = spark.read.parquet(f"{database_copy_save_path}/mid/affiliation")\
     .dropDuplicates(subset=['paper_id', 'author_sequence_number']) \
     .select(F.col('paper_id').alias('paper_id_2'), F.concat_ws("_", F.col('paper_id'), F.col('author_sequence_number')).alias('work_author_id_2'), 
             'original_author') \
-    .join(works, how='inner', on='paper_id_2') \
+    .join(works.select('paper_id_2'), how='inner', on='paper_id_2') \
     .select('work_author_id_2', 'original_author') \
     .filter(~F.col('original_author').isin(bad_author_names)) \
     .withColumn('author_2', transform_author_name(F.col('original_author')))
@@ -1664,10 +1664,10 @@ spark.read.parquet(f"{prod_save_path}/current_features_table/") \
             'concepts_shorter_2', 'coauthors_shorter_2') \
     .withColumn('author_2', F.trim(F.regexp_replace(F.col('author_2'), '&NA;', ''))) \
     .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[0-9]', ' '), ' +', ' '))) \
-    .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[\*$!<>/?~@|+=$#&^%«»:;\_]', ' '), 
+    .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[\*$!<>/?~@|+=$#&^%«»:;\_•]', ' '), 
                                                             ' +', ' '))) \
     .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[\[\]\{\}\(\)\\\]', ''), ' +', ' '))) \
-    .withColumn('author_2', F.regexp_replace(F.col('author_2'), """^[,."`\-\‐\– ]+""", '')) \
+    .withColumn('author_2', F.regexp_replace(F.col('author_2'), """^[,."`\-\‐\– ']+""", '')) \
     .filter(~(F.col('original_author').isin(bad_author_names) | 
               F.col('author_2').isin(bad_author_names) |
               (F.lower(F.col('author_2')).contains("download")) | 
@@ -1694,10 +1694,10 @@ spark.read.parquet(f"{prod_save_path}/current_features_table/")\
     .dropDuplicates()\
     .withColumn('author_2', F.trim(F.regexp_replace(F.col('author_2'), '&NA;', ''))) \
     .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[0-9]', ' '), ' +', ' '))) \
-    .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[$!<>/?~@|+=$#&^%«»:;]', ' '), 
+    .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[\*$!<>/?~@|+=$#&^%«»:;\_•]', ' '), 
                                                             ' +', ' '))) \
     .withColumn('author_2', F.trim(F.regexp_replace(F.regexp_replace(F.col('author_2'), '[\[\]\{\}\(\)\\\]', ''), ' +', ' '))) \
-    .withColumn('author_2', F.regexp_replace(F.col('author_2'), """^[,."`\-\*\‐\–\_ ]+""", '')) \
+    .withColumn('author_2', F.regexp_replace(F.col('author_2'), """^[,."`\-\‐\– ']+""", '')) \
     .filter((F.col('original_author').isin(bad_author_names) | 
              F.col('author_2').isin(bad_author_names) |
               (F.lower(F.col('author_2')).contains("download")) | 
@@ -1714,10 +1714,6 @@ spark.read.parquet(f"{temp_save_path}/current_features_table/").count()
 # COMMAND ----------
 
 curr_features = spark.read.parquet(f"{temp_save_path}/current_features_table/")
-
-# COMMAND ----------
-
-curr_features.filter(F.col('work_author_id_2').isin(['2954829117_2', '4240754231_1'])).show()
 
 # COMMAND ----------
 
@@ -1798,19 +1794,6 @@ spark.read\
 
 # COMMAND ----------
 
-# FOR INIT SAVE
-# (spark.read.parquet("s3://temp-prod-working-bucket/2023_09_12_01_30/new_data_to_be_given_null_value/") \
-#     .select(F.col('work_author_id_2').alias('work_author_id'), 'author_id', 
-#                 'display_name', 
-#                 'alternate_names', 
-#                 F.col('orcid_2').alias('orcid'))
-#     .withColumn("created_date", F.current_timestamp()) 
-#     .withColumn("modified_date", F.current_timestamp())
-#     .write.mode('overwrite')
-#     .parquet(f"{prod_save_path}/current_null_authors_table/"))
-
-# COMMAND ----------
-
 # saving null authors table
 spark.read.parquet(f"{prod_save_path}/current_null_authors_table/")\
     .write.mode('overwrite') \
@@ -1837,10 +1820,10 @@ w1 = Window.partitionBy('work_author_id').orderBy(F.col('name_len').desc())
     .withColumn('author', transform_author_name(F.col('original_author')))
     .withColumn('author', F.trim(F.regexp_replace(F.col('author'), '&NA;', ''))) \
     .withColumn('author', F.trim(F.regexp_replace(F.regexp_replace(F.col('author'), '[0-9]', ' '), ' +', ' '))) \
-    .withColumn('author', F.trim(F.regexp_replace(F.regexp_replace(F.col('author'), '[$!<>/?~@|+=$#&^%«»:;]', ' '), 
+    .withColumn('author', F.trim(F.regexp_replace(F.regexp_replace(F.col('author'), '[\*$!<>/?~@|+=$#&^%«»:;\_•]', ' '), 
                                                             ' +', ' '))) \
     .withColumn('author', F.trim(F.regexp_replace(F.regexp_replace(F.col('author'), '[\[\]\{\}\(\)\\\]', ''), ' +', ' '))) \
-    .withColumn('author', F.regexp_replace(F.col('author'), """^[,."`\-\*\‐\–\_ ]+""", '')) \
+    .withColumn('author', F.regexp_replace(F.col('author'), """^[,."`\-\‐\– ']+""", '')) \
     .filter(~(F.col('author').isin(bad_author_names) |
               (F.lower(F.col('author')).contains("download")) | 
               (F.lower(F.col('author')).contains("d.o.w.n.l.o.a.d")) |
@@ -3322,14 +3305,6 @@ else:
         .parquet(f"{prod_save_path}/current_author_names_match/")
 
     print(f"{datetime.datetime.now().strftime('%H:%M')}: Final author name match table written to S3")
-
-# COMMAND ----------
-
-temp_features_table.filter(F.col('work_author_id_2').isin(['2954829117_2', '4240754231_1'])).show()
-
-# COMMAND ----------
-
-spark.read.parquet(f"{temp_save_path}/final_author_table_part/*").filter(F.col('work_author_id').isin(['2954829117_2', '4240754231_1'])).show()
 
 # COMMAND ----------
 

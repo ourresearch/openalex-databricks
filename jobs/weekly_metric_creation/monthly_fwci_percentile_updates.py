@@ -69,181 +69,14 @@ buckets = get_secret("prod/aws/buckets")
 
 start_datetime = datetime.now()
 curr_date = start_datetime.strftime("%Y_%m_%d_%H_%M")
+# curr_date = "2024_07_27_12_43"
 database_copy_save_path = f"{buckets['database_copy_save_path']}"
 temp_save_path = f"{buckets['temp_save_path']}/{curr_date}_fwci/"
+print(curr_date)
 
 # COMMAND ----------
 
 # MAGIC %md ## FWCI
-
-# COMMAND ----------
-
-@udf(returnType=StringType())
-def type_crossref(looks_like_paratext, genre, journal, journal_type, doc_type):
-    # legacy type used < 2023-08
-    # (but don't get rid of it, it's used to derive the new type (display_genre))
-    if looks_like_paratext:
-        return "other"
-    if genre:
-        return genre
-    if doc_type:
-        lookup_mag_to_crossref_type = {
-            "Journal": "journal-article",
-            "Thesis": "dissertation",
-            "Conference": "proceedings-article",
-            "Repository": "posted-content",
-            "Book": "book",
-            "BookChapter": "book-chapter",
-            "Dataset": "dataset",
-        }
-        if mag_type := lookup_mag_to_crossref_type.get(doc_type):
-            return mag_type
-    if journal and journal_type and 'book' in journal_type:
-        return 'book-chapter'
-    return 'journal-article'
-
-REVIEW_JOURNAL_IDS = {206848516, 120397320, 111502347, 163102221, 316438,
-                      101036573, 70620193, 160464432, 12874817, 4210178125,
-                      169446993, 62674001, 7783507, 26843219, 157499488,
-                      112662651, 186543748, 67216020, 2898133657, 129217179,
-                      172508320, 201273009, 81141427, 96726197, 157921468,
-                      183292605, 19775678, 92651206, 28635856, 116269268,
-                      41981144, 18618073, 8553189, 37062379, 156364528,
-                      78310130, 51877618, 2491932416, 88857351, 10734860,
-                      2764917516, 93373720, 4210174246, 114927911, 4210234670,
-                      83493678, 22232893, 90458436, 182717252, 181418318,
-                      56802129, 150570842, 10577759, 129765729, 33396077,
-                      76837745, 144797041, 124600697, 4632444, 41143188,
-                      4210168218, 196724125, 4210201506, 24135080, 55210418,
-                      192051125, 78119372, 116952013, 161680845, 2755384784,
-                      4210198484, 62841813, 38078933, 118162903, 43764696,
-                      4210219483, 173474783, 105347553}
-
-@udf(returnType=StringType())
-def display_genre(looks_like_paratext, original_title, is_review, is_preprint, guess_type_from_title, is_libguide, type_crossref):
-    # this is what goes into the `Work.type` attribute
-    if looks_like_paratext:
-        return "paratext"
-    if original_title and 'supplementary table' in original_title.lower():
-        return 'supplementary-materials'
-    if is_review:
-        return 'review'
-    if is_preprint:
-        return 'preprint'
-    if is_libguide:
-        return 'libguides'
-
-    # infer "erratum", "editorial", "letter" types:
-    try:
-        if guess_type_from_title:
-            # todo: do another pass at this. improve precision and recall.
-            return guess_type_from_title
-    except AttributeError:
-        pass
-    lookup_crossref_to_openalex_type = {
-        "journal-article": "article",
-        "proceedings-article": "article",
-        "posted-content": "article",
-        "book-part": "book-chapter",
-        "journal-issue": "paratext",
-        "journal": "paratext",
-        "journal-volume": "paratext",
-        "report-series": "paratext",
-        "proceedings": "paratext",
-        "proceedings-series": "paratext",
-        "book-series": "paratext",
-        "component": "paratext",
-        "monograph": "book",
-        "reference-book": "book",
-        "book-set": "book",
-        "edited-book": "book",
-    }
-    # return mapping from lookup if it's in there, otherwise pass-through
-    return lookup_crossref_to_openalex_type.get(type_crossref, type_crossref)
-
-@udf(returnType=BooleanType())
-def is_review_old(journal_id, original_title):
-    return journal_id in REVIEW_JOURNAL_IDS or (original_title and 'a review' in original_title.lower())
-
-@udf(returnType=BooleanType())
-def is_review(journal_id, original_title):
-    review_phrases = ["systematic review","systematic analysis", "pooled analysis", "meta-analysis of", "meta analysis of", "review of particle physics", 
-                      "scoping review", "meta-analytic review", "a review","literature review"]
-    return journal_id in REVIEW_JOURNAL_IDS or (original_title and any(review_phrase in original_title.lower() for review_phrase in review_phrases))
-
-@udf(returnType=StringType())
-def guess_type_from_title(work_title):
-    erratum_exprs = [
-        r'^erratum',
-    ]
-    for expr in erratum_exprs:
-        if work_title and re.search(expr, work_title, re.IGNORECASE):
-            return "erratum"
-
-    letter_exprs = [
-        r'^letter:',
-        r'^letter to',
-        r'^letter$',
-        r'^\[letter to',
-    ]
-    for expr in letter_exprs:
-        if work_title and re.search(expr, work_title, re.IGNORECASE):
-            return "letter"
-
-    editorial_exprs = [
-        r'^editorial:',
-        r'^editorial$',
-        r'^editorial comment',
-        r'^guest editorial',
-        r'^editorial note',
-        r'^editorial -'
-    ]
-    for expr in editorial_exprs:
-        if work_title and re.search(expr, work_title, re.IGNORECASE):
-            return "editorial"
-
-    return None
-
-
-@udf(returnType=BooleanType())
-def looks_like_paratext(is_paratext, work_title):
-        if is_paratext:
-            return True
-
-        paratext_exprs = [
-            r'^Author Guidelines$',
-            r'^Author Index$'
-            r'^Back Cover',
-            r'^Back Matter',
-            r'^Contents$',
-            r'^Contents:',
-            r'^Cover Image',
-            r'^Cover Picture',
-            r'^Editorial Board',
-            r'Editor Report$',
-            r'^Front Cover',
-            r'^Frontispiece',
-            r'^Graphical Contents List$',
-            r'^Index$',
-            r'^Inside Back Cover',
-            r'^Inside Cover',
-            r'^Inside Front Cover',
-            r'^Issue Information',
-            r'^List of contents',
-            r'^List of Tables$',
-            r'^List of Figures$',
-            r'^List of Plates$',
-            r'^Masthead',
-            r'^Pages de début$',
-            r'^Title page',
-            r"^Editor's Preface",
-        ]
-
-        for expr in paratext_exprs:
-            if work_title and re.search(expr, work_title, re.IGNORECASE):
-                return True
-
-        return False
 
 # COMMAND ----------
 
@@ -274,7 +107,7 @@ work_merges_2.cache().count()
 works_1 = spark.read.parquet(f"{database_copy_save_path}/mid/work")\
     .dropDuplicates() \
     .filter(F.col('merge_into_id').isNull()) \
-    .select(F.col('paper_id').alias('paper_reference_id'), F.col('publication_date').alias('pub_date'), 'doc_type','journal_id')
+    .select(F.col('paper_id').alias('paper_reference_id'), F.col('publication_date').alias('pub_date'), 'type','journal_id')
 works_1.cache().count()
 
 works_2 = spark.read.parquet(f"{database_copy_save_path}/mid/work")\
@@ -331,7 +164,7 @@ primary_subfields.cache().count()
 citations_for_analysis = spark.read.parquet(f"{temp_save_path}fwci/citations_for_analysis")\
     .filter(F.col('pub_date').isNotNull() & F.col('citation_date').isNotNull()) \
     .select(F.col('paper_reference_id').alias('pub_paper'), F.to_date(F.col('pub_date'), 'yyyy-MM-dd').alias('publication_date'),
-            'doc_type', F.col('paper_id').alias('citation_paper'), F.to_date(F.col('citation_date'), 'yyyy-MM-dd').alias('citation_date')) \
+            'type', F.col('paper_id').alias('citation_paper'), F.to_date(F.col('citation_date'), 'yyyy-MM-dd').alias('citation_date')) \
     .withColumn('pub_year', F.year(F.col('publication_date'))) \
     .withColumn('citation_year', F.year(F.col('citation_date'))) \
     .filter(F.col('citation_year') >= F.col('pub_year'))
@@ -372,57 +205,24 @@ max_year_to_look_at = datetime.now().year
 
 # COMMAND ----------
 
-# public.libguides_paper_ids
-
-df = (spark.read
-.format("postgresql")
-.option("dbtable", 
-        f"(select * from public.libguides_paper_ids) as new_table")
-.option("host", secret['host'])
-.option("port", secret['port'])
-.option("database", secret['dbname'])
-.option("user", secret['username'])
-.option("password", secret['password'])
-.load())
-
-df \
-.write.mode('overwrite') \
-.parquet(f"{database_copy_save_path}/public/libguides_paper_ids")
-
 journal_types = spark.read.parquet(f"{database_copy_save_path}/mid/journal").filter(F.col('merge_into_id').isNull()) \
     .select('journal_id',F.col('display_name').alias('journal_name'), F.col('type').alias('journal_type'))
 journal_types.cache().count()
-
-libguides = spark.read.parquet(f"{database_copy_save_path}/public/libguides_paper_ids").select(F.col('paper_id').alias('paper_reference_id'))\
-    .withColumn('is_libguide', F.lit(True)).dropDuplicates()
-libguides.cache().count()
-
-# COMMAND ----------
-
-preprints = spark.read.csv(f"{database_copy_save_path}/temp_files_for_analysis/preprints.csv")\
-    .select(F.col('_c0').alias('paper_reference_id').cast(IntegerType()))\
-    .withColumn('is_preprint', F.lit(True)).dropDuplicates()
-preprints.cache().count()
 
 # COMMAND ----------
 
 work_types = spark.read.parquet(f"{database_copy_save_path}/mid/work")\
     .filter(F.col('merge_into_id').isNull()) \
-    .select(F.col('paper_id').alias('paper_reference_id'), 'doc_type', 'genre', 'journal_id','original_title','is_paratext')\
+    .select(F.col('paper_id').alias('paper_reference_id'), 'type', 'journal_id')\
     .join(journal_types, on='journal_id', how='left') \
-    .join(libguides, on='paper_reference_id', how='left') \
-    .join(preprints, on='paper_reference_id', how='left') \
-    .fillna(False, subset=['is_libguide', 'is_paratext']) \
-    .withColumn('is_review', is_review(F.col('journal_id'), F.col('original_title'))) \
-    .withColumn('guess_type_from_title', guess_type_from_title(F.lower(F.col('original_title')))) \
-    .withColumn('looks_like_paratext', looks_like_paratext(F.col('is_paratext'), F.col('original_title'))) \
-    .withColumn('type_crossref', type_crossref(F.col('looks_like_paratext'), F.col('genre'), F.col('journal_id'), F.col('journal_type'), F.col('doc_type'))) \
-    .withColumn('display_genre', display_genre(F.col('looks_like_paratext'), F.col('original_title'), F.col('is_review'), F.col('is_preprint'), 
-                                               F.col('guess_type_from_title'), F.col('is_libguide'), F.col('type_crossref'))) \
-    .withColumn('work_type_final', F.when((F.col('display_genre')=='article') & (F.col('journal_type')=='conference'), 'conference_article').otherwise(F.col('display_genre'))) \
-    .select('paper_reference_id', 'original_title', 'work_type_final')
+    .withColumn('work_type_final', F.when((F.col('type')=='article') & (F.col('journal_type')=='conference'), 'conference_article').otherwise(F.col('type'))) \
+    .select('paper_reference_id', 'work_type_final')
 
 work_types.cache().count()
+
+# COMMAND ----------
+
+display(work_types.groupBy('work_type_final').count().orderBy('count'))
 
 # COMMAND ----------
 
@@ -510,6 +310,49 @@ no_citations = spark.read.parquet(f"{temp_save_path}fwci/papers_with_no_citation
 
 # COMMAND ----------
 
+# MAGIC %md #### Percentiles
+
+# COMMAND ----------
+
+w_pert = Window.partitionBy(['pub_year','work_type','subfield_id']).orderBy(F.col('total_citations'))
+w_max = Window.partitionBy(['pub_year','work_type','subfield_id'])
+
+# COMMAND ----------
+
+counts_all_citations = citation_counts_by_year_diff.groupBy('pub_paper').count().join(single_rows, how='left', on='pub_paper') \
+    .select(F.col('pub_paper').alias('paper_id'), 'work_type', 'subfield_id','pub_year', F.col('count').alias('total_citations')) \
+    .union(no_citations.select('paper_id', 'work_type', 'subfield_id', F.col('publication_year').alias('pub_year'), F.lit(0).alias('total_citations'))) \
+    .filter(F.col('subfield_id').isNotNull()).filter(F.col('work_type').isNotNull()).filter(F.col('pub_year').isNotNull())
+counts_all_citations.cache().count()
+
+# COMMAND ----------
+
+counts_all_citations \
+    .write.mode('overwrite') \
+    .parquet(f"{temp_save_path}percentiles/counts_all_citations")
+
+# COMMAND ----------
+
+normalized_counts = counts_all_citations.alias('normalized_bucket_counts').groupBy(['pub_year','subfield_id','work_type']).count()
+
+# COMMAND ----------
+
+final_percentile_df = counts_all_citations \
+    .withColumn('rank', F.rank().over(w_pert)) \
+    .withColumn('max_rank', F.max(F.col('rank')).over(w_max)) \
+    .join(normalized_counts, how='inner', on=['pub_year','subfield_id','work_type'])
+
+final_percentile_df.cache().count()
+
+# COMMAND ----------
+
+final_percentile_df.withColumn("normalized_percentile", (F.col('rank')-1)/(F.col('max_rank')+1)) \
+    .select('paper_id', 'total_citations', F.round(F.col('normalized_percentile'), 8).alias('normalized_percentile')) \
+    .write.mode('overwrite') \
+    .parquet(f"{temp_save_path}/percentiles/normalized_citation_percentile_type_year_subfield")
+
+# COMMAND ----------
+
 # MAGIC %md #### Getting expected citation counts
 
 # COMMAND ----------
@@ -521,7 +364,7 @@ spark.read.parquet(f"{temp_save_path}fwci/paper_citation_counts_latest") \
     .select(F.col('publication_year'), F.col('subfield_id'), F.col('work_type'), F.round('expected_citations',8).alias('expected_citations'))  \
     .filter(F.col('publication_year')<=max_year_to_look_at) \
     .write.mode('overwrite') \
-    .parquet(f"{temp_save_path}fwci/expected_paper_citation_counts")
+    .parquet(f"{temp_save_path}/fwci/expected_paper_citation_counts")
 
 # COMMAND ----------
 
@@ -575,31 +418,12 @@ spark.read.parquet(f"{temp_save_path}fwci/expected_paper_citation_counts") \
 
 # COMMAND ----------
 
-# MAGIC %md #### Check for changes to table (only write changes for works that have changed for under pub_year + 3 years old)
-
-# COMMAND ----------
-
-old_expected_counts = spark.read.parquet(f"{database_copy_save_path}/counts/expected_citations").select('publication_year','subfield_id','work_type','expected_citations')
-
-# COMMAND ----------
-
-old_fwci = spark.read.parquet(f"{database_copy_save_path}/counts/work_fwci").select('paper_id','publication_year','subfield_id','work_type','fwci')
-
-# COMMAND ----------
-
-new_expected_counts = spark.read.parquet(f"{temp_save_path}fwci/expected_paper_citation_counts")
-
-# COMMAND ----------
-
-new_fwci = spark.read.parquet(f"{temp_save_path}fwci/final_fwci_all_papers")
-
-# COMMAND ----------
-
-# TO BE COMPLETED
-
-# check that for a paper ID, the number of citations at the end of pub_year + 3, work_type, year, and subfield are all the same (if not, re-write the fwci)
-
-# need to differentiate between total number of citations vs number of citations at the end of pub_year + 3
+# for first write only
+spark.read.parquet(f"{temp_save_path}/percentiles/normalized_citation_percentile_type_year_subfield") \
+    .select(F.col('paper_id').alias('work_id'), 'total_citations', F.col('normalized_percentile').alias('normalized_citation_percentile')) \
+    .withColumn("update_date", F.current_timestamp()) \
+    .write.mode('overwrite') \
+    .parquet(f"{database_copy_save_path}/counts/work_norm_citation_percentile_by_type_year_subfield")
 
 # COMMAND ----------
 
@@ -607,7 +431,7 @@ new_fwci = spark.read.parquet(f"{temp_save_path}fwci/final_fwci_all_papers")
 
 # COMMAND ----------
 
-dynos_to_shutdown = ['fast_store_works']
+dynos_to_shutdown = ['fast_store_works', 'fast_store_works_authors_changed']
 curr_q = shutdown_dynos(heroku_secret['heroku_token'], dynos_to_shutdown)
 curr_q
 
@@ -632,6 +456,20 @@ spark.read.parquet(f"{database_copy_save_path}/counts/expected_citations") \
     .write.format("jdbc") \
     .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") \
     .option("dbtable", 'counts.expected_citations') \
+    .option("user", secret['username']) \
+    .option("password", secret['password']) \
+    .option("driver", "org.postgresql.Driver") \
+    .option("truncate", True) \
+    .mode("overwrite") \
+    .save()
+
+# COMMAND ----------
+
+spark.read.parquet(f"{database_copy_save_path}/counts/work_norm_citation_percentile_by_type_year_subfield") \
+    .repartition(20) \
+    .write.format("jdbc") \
+    .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") \
+    .option("dbtable", 'counts.work_norm_citation_percentile_by_type_year_subfield') \
     .option("user", secret['username']) \
     .option("password", secret['password']) \
     .option("driver", "org.postgresql.Driver") \

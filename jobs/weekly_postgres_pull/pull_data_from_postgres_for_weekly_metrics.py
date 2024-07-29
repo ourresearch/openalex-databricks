@@ -336,20 +336,35 @@ df \
 
 # COMMAND ----------
 
-# ins.recordthresher_record
+# # ins.recordthresher_record
+
+# if len(work_id_predicates) == 125:
+#     final_predicates = []
+#     final_predicates.append(f"work_id >= 0 and work_id < {work_id_predicates[2]}")
+#     for i in range(2, len(work_id_predicates[:-3]), 3):
+#         final_predicates.append(f"work_id >= {work_id_predicates[i]} and work_id < {work_id_predicates[i+3]}")
+#     final_predicates.append(f"work_id >= {work_id_predicates[-2]}")
+# print(len(final_predicates))
+
+# testing_new_predicates = final_predicates[:-1].copy()
+# testing_new_predicates.append(f'work_id >= {work_id_predicates[-3]} and work_id < {work_id_predicates[-2]}')
+# testing_new_predicates.append(f'work_id >= {work_id_predicates[-2]} and work_id < 4395018129')
+# testing_new_predicates.append('work_id >= 4395018129 and work_id < 4395318129')
+# testing_new_predicates.append('work_id >= 4395318129 and work_id < 4395718129')
+# testing_new_predicates.append('work_id >= 4395718129 and work_id < 4396018129')
+# testing_new_predicates.append('work_id >= 4396018129 and work_id < 4396118129')
+# testing_new_predicates.append('work_id >= 4396118129')
+# print(len(testing_new_predicates))
 
 # df = (spark.read
-# .format("postgresql")
-# .option("dbtable", 
-#         f"(select work_id, title, journal_id, authors from ins.recordthresher_record where record_type = 'mag_location') as new_table")
-# .option("host", secret['host'])
-# .option("port", secret['port'])
-# .option("database", secret['dbname'])
-# .option("user", secret['username'])
-# .option("password", secret['password'])
-# .load())
+#       .jdbc(
+#               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
+#               table="(select work_id, record_type, title, journal_id, authors from ins.recordthresher_record) as new_table", 
+#               properties={"user": secret['username'],
+#                           "password": secret['password']}, 
+#               predicates=testing_new_predicates))
 
 # df \
 # .repartition(256) \
 # .write.mode('overwrite') \
-# .parquet(f"{database_copy_save_path}/ins/recordthresher_record_partial")
+# .parquet(f"{database_copy_save_path}/ins/recordthresher_record")

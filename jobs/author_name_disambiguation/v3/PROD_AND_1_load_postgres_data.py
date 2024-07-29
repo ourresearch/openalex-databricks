@@ -103,7 +103,7 @@ testing_new_predicates
 df = (spark.read
       .jdbc(
               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
-              table="(select distinct paper_id, original_title, doi_lower, oa_status, journal_id, merge_into_id, publication_date, doc_type, genre, arxiv_id, is_paratext, best_url, best_free_url, created_date from mid.work) new_table", 
+              table="(select distinct paper_id, original_title, doi_lower, oa_status, journal_id, merge_into_id, publication_date, type, type_crossref, arxiv_id, is_paratext, best_url, best_free_url, created_date from mid.work) new_table", 
               properties={"user": secret['username'],
                           "password": secret['password']}, 
               predicates=testing_new_predicates))
@@ -121,7 +121,7 @@ df \
 df = (spark.read
       .jdbc(
               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
-              table="(select distinct paper_id,author_id,affiliation_id,author_sequence_number,original_author,original_orcid from mid.affiliation) new_table", 
+              table="(select distinct paper_id,author_id,affiliation_id,author_sequence_number,original_author,original_orcid,original_affiliation from mid.affiliation) new_table", 
               properties={"user": secret['username'],
                           "password": secret['password']}, 
               predicates=testing_new_predicates))
