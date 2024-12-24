@@ -480,3 +480,7 @@ spark.read.parquet(f"{database_copy_save_path}/counts/work_norm_citation_percent
 # COMMAND ----------
 
 _ = restart_dynos(heroku_secret['heroku_token'], dynos_to_shutdown, curr_q)
+
+# COMMAND ----------
+
+

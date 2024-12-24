@@ -1107,6 +1107,130 @@ def process_orcid(orcid, orcid_len):
 
 # COMMAND ----------
 
+def replace_symbols(name):
+    name = name.replace(" ", " ").replace(".", " ").replace(",", " ").replace("|", " ").replace(")", "").replace("(", "")\
+            .replace("-", " ").replace("&", "").replace("$", "").replace("#", "").replace("@", "").replace("%", "").replace("0", "") \
+            .replace("1", "").replace("2", "").replace("3", "").replace("4", "").replace("5", "").replace("6", "").replace("7", "") \
+            .replace("8", "").replace("9", "").replace("*", "").replace("^", "").replace("{", "").replace("}", "").replace("+", "") \
+            .replace("=", "").replace("_", "").replace("~", "").replace("`", "").replace("[", "").replace("]", "").replace("\\", "") \
+            .replace("<", "").replace(">", "").replace("?", "").replace("/", "").replace(";", "").replace(":", "").replace("\'", "") \
+            .replace("\"", "").replace("‐", " ")
+    return name
+
+
+@udf(returnType=ArrayType(StringType()))
+def transform_name_for_orcid_match_list(raw_string):
+    if isinstance(raw_string, str):
+        name = raw_string.title()
+        if isinstance(name, str):
+            name = unidecode(unicodedata.normalize('NFKC', name))
+            name = replace_symbols(name)
+            name = name.split()
+        else:
+            name = []
+    else:
+        name = []
+    return name
+
+@udf(returnType=StringType())
+def transform_name_for_orcid_match_string(raw_string):
+    if isinstance(raw_string, str):
+        name = raw_string.title()
+        if isinstance(name, str):
+            name = unidecode(unicodedata.normalize('NFKC', name))
+            name = replace_symbols(name)
+            name = " ".join(name.split())
+        else:
+            name = ""
+    else:
+        name = ""
+    return name
+
+# COMMAND ----------
+
+@udf(returnType=ArrayType(FloatType()))
+def score_orcid_names_to_original_author(raw_string, given_names, family_name):
+
+    # Making sure that if a name has 2 of the same initials, it can still match to each one (instead of 
+    # just looking at unique names/initials)
+    dict_key_num = 0
+    family_name_dict = {}
+    given_names_dict = {}
+    full_names_dict = {}
+    for one_name in given_names:
+        given_names_dict[dict_key_num] = one_name
+        full_names_dict[dict_key_num] = one_name
+        dict_key_num += 1
+
+    for one_name in family_name:
+        family_name_dict[dict_key_num] = one_name
+        full_names_dict[dict_key_num] = one_name
+        dict_key_num += 1
+
+    family_points = 0.0
+    given_points = 0.0
+    initial_points = 0.0
+
+    # Finding family name matches (full name)
+    if len(family_name) > 0:
+        fam_names_found = sum([1 for single_name in family_name if single_name in raw_string])
+        if fam_names_found == 0:
+            return [0.0, 0.0, 0.0]
+        else:
+            for one_name_item in family_name_dict.items():
+                if len(one_name_item[1]) > 1:
+                    res = re.search(rf'\b{one_name_item[1]}\b', raw_string)
+                    if res:
+                        family_points += 1.0
+                        beg = res.span()[0]
+                        end = res.span()[1]
+                        full_names_dict.pop(one_name_item[0])
+                        raw_string = (raw_string[0:beg] + raw_string[end:]).strip()
+                    else:
+                        if one_name_item[1] in raw_string:
+                            family_points += 0.75
+                            beg = raw_string.find(one_name_item[1])
+                            end = beg + len(one_name_item[1])
+                            full_names_dict.pop(one_name_item[0])
+                            raw_string = (raw_string[0:beg] + raw_string[end:]).strip()
+                        else:
+                            pass
+
+    # Finding given name matches (full name)
+    if len(given_names) > 0:
+        for one_name_item in given_names_dict.items():
+            if len(one_name_item[1]) > 1:
+                res = re.search(rf'\b{one_name_item[1]}\b', raw_string)
+                if res:
+                    given_points += 1.0
+                    beg = res.span()[0]
+                    end = res.span()[1]
+                    full_names_dict.pop(one_name_item[0])
+                    raw_string = (raw_string[0:beg] + raw_string[end:]).strip()
+                else:
+                    if one_name_item[1] in raw_string:
+                        given_points += 0.75
+                        beg = raw_string.find(one_name_item[1])
+                        end = beg + len(one_name_item[1])
+                        full_names_dict.pop(one_name_item[0])
+                        raw_string = (raw_string[0:beg] + raw_string[end:]).strip()
+                    else:
+                        pass
+
+    # Finding leftover initial matches
+    final_initial_dict = {i:j[0] for i,j in full_names_dict.items()}
+    for one_name_item in final_initial_dict.items():
+        res = re.search(rf'\b{one_name_item[1]}\b', raw_string)
+        if res:
+            initial_points += 1.0
+            beg = res.span()[0]
+            end = res.span()[1]
+            raw_string = (raw_string[0:beg] + raw_string[end:]).strip()
+                    
+    return [family_points, given_points, initial_points]
+
+# COMMAND ----------
+
 # MAGIC %md ### Get final ORCID for each work
 
 # COMMAND ----------
@@ -1120,9 +1244,9 @@ source_orcid.cache().count()
 
 aff_orcid = spark.read.parquet(f"{database_copy_save_path}/mid/affiliation")\
     .select(F.col('paper_id').alias('paper_id_2'), F.concat_ws("_", F.col('paper_id'), F.col('author_sequence_number')).alias('work_author_id_2'), 
-            'original_orcid') \
+            'original_orcid','original_author') \
     .dropDuplicates(subset=['work_author_id_2']) \
-    .select('work_author_id_2', 'original_orcid')
+    .select('work_author_id_2', 'original_orcid','original_author')
 aff_orcid.cache().count()
 
 # COMMAND ----------
@@ -1132,6 +1256,17 @@ add_orcid = spark.read.parquet(f"{database_copy_save_path}/orcid/add_orcid") \
     .withColumn('rank', F.row_number().over(w1)) \
     .filter(F.col('rank')==1) \
     .select(F.col('work_author_id').alias('work_author_id_2'), F.col('new_orcid'))
+
+# COMMAND ----------
+
+orcid_names = spark.read.parquet(f"{orcid_save_path}/temp_working_files/raw_orcid_base")\
+    .filter(F.col('given_names').isNotNull() | F.col('family_name').isNotNull()) \
+    .filter((F.col('given_names')!="") | (F.col('family_name')!=""))
+orcid_names.cache().count()
+
+# COMMAND ----------
+
+w_orcid_new = Window.partitionBy(['paper_id_2','final_orcid']).orderBy(F.col('family_name_match_score').desc(), F.col('given_names_match_score').desc(), F.col('initials_match_score').desc())
 
 # COMMAND ----------
 
@@ -1148,15 +1283,43 @@ aff_orcid.filter(F.col('author_id').isNotNull())\
     .withColumn('orcid_source', F.when(F.col('new_orcid').isNotNull(), F.lit('user')).otherwise(F.col('orcid_source_init'))) \
     .filter(F.col('final_orcid').isNotNull()) \
     .filter(F.col('final_orcid')!="") \
-    .select(F.split(F.col('work_author_id_2'), '_').alias('work_author_id'), 'final_orcid','orcid_source') \
+    .join(orcid_names.select(F.col('orcid').alias('final_orcid'), 'given_names','family_name'), how='left', on='final_orcid') \
+    .withColumn('original_author_proc',transform_name_for_orcid_match_string('original_author')) \
+    .withColumn('given_names_proc',transform_name_for_orcid_match_list('given_names')) \
+    .withColumn('family_name_proc',transform_name_for_orcid_match_list('family_name')) \
+    .withColumn('match_scores', score_orcid_names_to_original_author(F.col('original_author_proc'), F.col('given_names_proc'), F.col('family_name_proc'))) \
+    .withColumn('family_name_match_score', F.col('match_scores').getItem(0)) \
+    .withColumn('given_names_match_score', F.col('match_scores').getItem(1)) \
+    .withColumn('initials_match_score', F.col('match_scores').getItem(2)) \
+    .filter(F.col('family_name_match_score')>0.0) \
+    .filter((F.col('given_names_match_score')>0.0) | (F.col('initials_match_score')>0.0)) \
+    .withColumn('paper_orcid_rank', F.dense_rank().over(w_orcid_new)) \
+    .filter(F.col('paper_orcid_rank')==1) \
+    .select(F.split(F.col('work_author_id_2'), '_').alias('work_author_id'), 'final_orcid','orcid_source', 'original_author') \
     .select(F.col('work_author_id').getItem(0).cast(LongType()).alias('paper_id'), 
-            F.col('work_author_id').getItem(1).cast(IntegerType()).alias('author_sequence_number'), 'final_orcid','orcid_source') \
+            F.col('work_author_id').getItem(1).cast(IntegerType()).alias('author_sequence_number'), 'final_orcid','orcid_source','original_author') \
+    .write.mode('overwrite') \
+    .parquet(f"{database_copy_save_path}/orcid/combined_source_orcid_temp")
+
+# COMMAND ----------
+
+dups = spark.read.parquet(f"{database_copy_save_path}/orcid/combined_source_orcid_temp").groupBy(['paper_id','final_orcid']).count().filter(F.col('count')>1).select('paper_id','final_orcid').alias('dup_orcids')
+
+# COMMAND ----------
+
+spark.read.parquet(f"{database_copy_save_path}/orcid/combined_source_orcid_temp") \
+    .join(dups, how='leftanti', on=['paper_id','final_orcid']) \
     .write.mode('overwrite') \
     .parquet(f"{database_copy_save_path}/orcid/combined_source_orcid")
 
 # COMMAND ----------
 
+# 87567854
 spark.read.parquet(f"{database_copy_save_path}/orcid/combined_source_orcid").count()
+
+# COMMAND ----------
+
+spark.read.parquet(f"{database_copy_save_path}/orcid/combined_source_orcid").groupBy(['paper_id','final_orcid']).count().filter(F.col('count')>1).count()
 
 # COMMAND ----------
 
@@ -1188,8 +1351,27 @@ source_orcid_final_table.count()
 
 # COMMAND ----------
 
-curr_authors_grouped = spark.read.parquet(f"{prod_save_path}/current_authors_table/") \
+frozen_authors = (spark.read
+        .format("postgresql")
+        .option("dbtable", "authorships.author_freeze")
+        .option("host", secret['host'])
+        .option("port", secret['port'])
+        .option("database", secret['dbname'])
+        .option("user", secret['username'])
+        .option("password", secret['password'])
+        .option("partitionColumn", "partition_col")
+        .option("lowerBound", 1)
+        .option("upperBound", 40)
+        .option("numPartitions", 20)
+        .load())
+
+frozen_authors.select('author_id').dropDuplicates().cache().count()
+
+# COMMAND ----------
+
+curr_authors_grouped_temp = spark.read.parquet(f"{prod_save_path}/current_authors_table/") \
     .select('author_id', F.col('work_author_id').alias('work_author_id_2')) \
+    .filter(~F.col('author_id').isin([9999999999, 5317838346])) \
     .join(source_orcid_final_table
           .select(F.concat_ws("_", F.col('paper_id'), 
                               F.col('author_sequence_number')).alias('work_author_id_2'), 'final_orcid'), how='left', on='work_author_id_2') \
@@ -1198,15 +1380,16 @@ curr_authors_grouped = spark.read.parquet(f"{prod_save_path}/current_authors_tab
                               F.collect_set('work_author_id_2').alias('work_author_ids')) \
     .withColumn('final_orcid', get_non_null_orcid(F.col('final_orcid'))) \
     .withColumn('orcid_len', F.size(F.col('final_orcid'))) \
-    .filter(F.col('orcid_len')>1)
+    .filter(F.col('orcid_len')>1) \
+    .join(frozen_authors.select('author_id'), how='leftanti', on='author_id')
 
-curr_authors_grouped.cache().count()
+curr_authors_grouped_temp.cache().count()
 
 # COMMAND ----------
 
-print("2 orcid: ", curr_authors_grouped.filter(F.col('orcid_len')==2).count())
-print("3 orcid: ", curr_authors_grouped.filter(F.col('orcid_len')==3).count())
-print("4+ orcid: ", curr_authors_grouped.filter(F.col('orcid_len')>=4).count())
+print("2 orcid: ", curr_authors_grouped_temp.filter(F.col('orcid_len')==2).count())
+print("3 orcid: ", curr_authors_grouped_temp.filter(F.col('orcid_len')==3).count())
+print("4+ orcid: ", curr_authors_grouped_temp.filter(F.col('orcid_len')>=4).count())
 
 # After overmerge fix round 1 (>=15): Added ratio of 44 new authors for every fixed author ID
 # 2 orcid:  579977
@@ -1230,234 +1413,100 @@ print("4+ orcid: ", curr_authors_grouped.filter(F.col('orcid_len')>=4).count())
 
 # COMMAND ----------
 
+curr_authors_grouped_temp.filter(F.col("author_id")==5100394072).display()
+
+# COMMAND ----------
+
 # MAGIC %md #### Code to run if there are multiple ORCIDs in a single author ID
 
 # COMMAND ----------
 
-if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
-    print("Overmerge fix needed")
+if curr_authors_grouped_temp.filter(F.col('orcid_len')>=2).count() > 10000:
+    number_of_partitions = int(curr_authors_grouped_temp.filter(F.col('orcid_len')>=2).count()/10000)
+    # create random int to split up data
+    curr_author_grouped_temp = curr_authors_grouped_temp\
+        .withColumn('random_int', (F.rand()*number_of_partitions).cast(IntegerType()))
+else:
+    curr_author_grouped_temp = curr_authors_grouped_temp\
+        .withColumn('random_int', F.lit(0))
 
-    # Get coauthor orcids
-    spark.read.parquet(f"{prod_save_path}/current_features_table/") \
-        .select('work_author_id_2','paper_id_2', 'original_author') \
-        .join(source_orcid_final_table.select(F.concat_ws("_", F.col('paper_id'), F.col('author_sequence_number')).alias('work_author_id_2'), 
-                                            F.col('final_orcid').alias('orcid_2')), how='left', on='work_author_id_2') \
-        .fillna("", subset=['orcid_2']) \
-        .groupBy('paper_id_2').agg(F.collect_set(F.col('orcid_2')).alias('coauthor_orcids'), 
-                                F.collect_set(F.col('work_author_id_2')).alias('work_author_ids')) \
-        .withColumn('coauthor_orcids', get_non_null_orcid(F.col('coauthor_orcids'))) \
-        .select('paper_id_2', 'coauthor_orcids', F.explode('work_author_ids').alias('work_author_id_2')) \
-        .write.mode('overwrite') \
-        .parquet(f"{temp_save_path}/coauthor_orcids/")
-    
-    coauthor_orcids = spark.read.parquet(f"{temp_save_path}/coauthor_orcids/")
+curr_author_grouped_temp \
+    .write.mode('overwrite') \
+    .parquet(f"{temp_save_path}/temp_grouped_orcid_table_with_rand_ints/")
 
-    # Get topics
-    topics = spark.read.parquet(f"{database_copy_save_path}/mid/topic") \
-        .select('topic_id', F.col('display_name').alias('topic_name'), 'subfield_id', 'field_id')
+curr_author_grouped_rand_int = spark.read.parquet(f"{temp_save_path}/temp_grouped_orcid_table_with_rand_ints/")
 
-    work_topics = spark.read.parquet(f"{database_copy_save_path}/mid/work_topic").dropDuplicates() \
-        .filter(F.col('topic_rank')==1) \
-        .select(F.col('paper_id').alias('paper_id_2'), 'topic_id') \
-        .join(topics, on='topic_id', how='inner')
+# get unique list of values in random int column
+unique_random_ints = curr_author_grouped_rand_int.select(F.collect_set('random_int').alias('random_int')).first()['random_int']
 
-    # Creating a feature table of all work_authors that need to be reclustered
-    spark.read.parquet(f"{prod_save_path}/current_features_table/") \
-        .join(curr_authors_grouped.select('author_id',F.explode('work_author_ids').alias('work_author_id_2'), 'orcid_len'), how='inner', on='work_author_id_2') \
-        .select('work_author_id_2', 'citations_2', 'institutions_2', 'author_2', 'paper_id_2', 'original_author', 
-                'concepts_shorter_2', 'coauthors_shorter_2','author_id','orcid_len') \
-        .join(source_orcid_final_table.select(F.concat_ws("_", F.col('paper_id'), F.col('author_sequence_number')).alias('work_author_id_2'), 
-                                            F.col('final_orcid').alias('orcid_2')), how='left', on='work_author_id_2') \
-        .fillna("", subset=['orcid_2']) \
-        .join(work_topics, how='left', on='paper_id_2') \
-        .join(coauthor_orcids, how='left', on=['paper_id_2','work_author_id_2']) \
-        .withColumn('coauthor_orcids', transform_list_col_for_nulls_string(F.col('coauthor_orcids'))) \
-        .withColumn('coauthor_orcids', remove_current_author(F.col('orcid_2'), F.col('coauthor_orcids'))) \
-        .write.mode('overwrite') \
-        .parquet(f"{temp_save_path}/features_table_to_recluster_orcid/")
+# COMMAND ----------
 
-    all_features = spark.read.parquet(f"{temp_save_path}/features_table_to_recluster_orcid/")
+print(unique_random_ints)
 
-    print("Size of reclustering DF: ", spark.read.parquet(f"{temp_save_path}/features_table_to_recluster_orcid/").dropDuplicates(subset=['work_author_id_2']).count())
+# COMMAND ----------
 
-    # Getting the ORCID that will retain the author ID for each multi-orcid author ID
-    w_orc = Window.partitionBy('author_id').orderBy([F.col('count').desc(), F.col('orcid_2')])
-    author_ids_keep_orcid = spark.read.parquet(f"{temp_save_path}/features_table_to_recluster_orcid/") \
-        .filter(F.col('orcid_2')!='')\
-        .groupBy(['author_id','orcid_2']).count() \
-        .withColumn('orcid_rank', F.row_number().over(w_orc)) \
-        .filter(F.col('orcid_rank')==1)
+for random_int in unique_random_ints:
+    print(random_int)
+    curr_authors_grouped = curr_author_grouped_rand_int.filter(F.col('random_int')==random_int).alias('rand_group')
 
-    print("Number of author IDs to keep: ", author_ids_keep_orcid.cache().count())
+    if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
+        print("Overmerge fix needed")
 
-    #################################### Round 1 of reclustering ####################################
-    left_side = spark.read.parquet(f"{temp_save_path}/features_table_to_recluster_orcid/").filter(F.col('orcid_len')>=2) \
-        .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
-        .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
-        .filter(F.col('name_to_keep_ind')==1) \
-        .withColumn('trans_name', transform_name_for_search(F.col('author_2'))) \
-        .withColumn('name_len', F.length(F.col('trans_name'))) \
-        .filter(F.col('name_len')>1) \
-        .fillna(-1, subset=['topic_id','subfield_id','field_id']) \
-        .select(F.col('paper_id_2').alias('paper_id_left'), F.col('work_author_id_2').alias('work_author_id_left'), F.col('orcid_2').alias('orcid_left'), 
-                        F.col('citations_2').alias('citations_left'), F.col('institutions_2').alias('institutions_left'), F.col('trans_name').alias('trans_name_left'), 
-                        F.col('author_id'), F.col('topic_id').alias('topic_id_left'), F.col('topic_name').alias('topic_name_left'), 
-                        F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
-                        F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left')) \
-        .filter(F.col('orcid_left')!='') \
-        .groupBy(['author_id','orcid_left']) \
-        .agg(F.collect_set(F.col('work_author_id_left')).alias('work_author_id_left'), 
-            F.collect_list(F.col('citations_left')).alias('citations_left'), 
-            F.collect_list(F.col('institutions_left')).alias('institutions_left'), 
-            F.collect_list(F.col('trans_name_left')).alias('trans_name_left'), 
-            F.collect_list(F.col('coauthor_orcids_left')).alias('coauthor_orcids_left'), 
-            F.collect_list(F.col('concepts_shorter_left')).alias('concepts_shorter_left'), 
-            F.collect_list(F.col('coauthors_shorter_left')).alias('coauthors_shorter_left'), 
-            F.collect_set(F.col('topic_id_left')).alias('topic_id_left'), 
-            F.collect_set(F.col('subfield_id_left')).alias('subfield_id_left'), 
-            F.collect_set(F.col('field_id_left')).alias('field_id_left')) \
-        .select('author_id','orcid_left', 'work_author_id_left', 
-                F.array_distinct(F.col('trans_name_left')).alias('trans_name_left'),
-                F.array_remove(F.array_distinct(F.col('topic_id_left')), -1).alias('topic_id_left'), 
-                F.array_remove(F.array_distinct(F.col('subfield_id_left')), -1).alias('subfield_id_left'), 
-                F.array_remove(F.array_distinct(F.col('field_id_left')), -1).alias('field_id_left'),
-                F.array_distinct(F.flatten(F.col('citations_left'))).alias('citations_left'), 
-                F.array_distinct(F.flatten(F.col('institutions_left'))).alias('institutions_left'), 
-                F.array_remove(F.array_distinct(F.flatten(F.col('coauthor_orcids_left'))), "").alias('coauthor_orcids_left'), 
-                F.array_distinct(F.flatten(F.col('concepts_shorter_left'))).alias('concepts_shorter_left'), 
-                F.array_distinct(F.flatten(F.col('coauthors_shorter_left'))).alias('coauthors_shorter_left')) \
-        .withColumn('name_match_list_left', get_name_match_from_alternate_names('trans_name_left'))
+        # Get coauthor orcids
+        spark.read.parquet(f"{prod_save_path}/current_features_table/") \
+            .select('work_author_id_2','paper_id_2', 'original_author') \
+            .join(source_orcid_final_table.select(F.concat_ws("_", F.col('paper_id'), F.col('author_sequence_number')).alias('work_author_id_2'), 
+                                                F.col('final_orcid').alias('orcid_2')), how='left', on='work_author_id_2') \
+            .fillna("", subset=['orcid_2']) \
+            .groupBy('paper_id_2').agg(F.collect_set(F.col('orcid_2')).alias('coauthor_orcids'), 
+                                    F.collect_set(F.col('work_author_id_2')).alias('work_author_ids')) \
+            .withColumn('coauthor_orcids', get_non_null_orcid(F.col('coauthor_orcids'))) \
+            .select('paper_id_2', 'coauthor_orcids', F.explode('work_author_ids').alias('work_author_id_2')) \
+            .write.mode('overwrite') \
+            .parquet(f"{temp_save_path}/coauthor_orcids/")
+        
+        coauthor_orcids = spark.read.parquet(f"{temp_save_path}/coauthor_orcids/")
 
+        # Get topics
+        topics = spark.read.parquet(f"{database_copy_save_path}/mid/topic") \
+            .select('topic_id', F.col('display_name').alias('topic_name'), 'subfield_id', 'field_id')
 
-    right_side = spark.read.parquet(f"{temp_save_path}/features_table_to_recluster_orcid/").filter(F.col('orcid_len')>=2) \
-        .filter(F.col('orcid_2')=='') \
-        .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
-        .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
-        .filter(F.col('name_to_keep_ind')==1) \
-        .withColumn('trans_name', transform_name_for_search(F.col('author_2'))) \
-        .withColumn('name_len', F.length(F.col('trans_name'))) \
-        .filter(F.col('name_len')>1) \
-        .withColumn('name_match_list', get_name_match_list(F.col('trans_name'))) \
-        .fillna(-1, subset=['topic_id','subfield_id','field_id']) \
-        .select(F.col('paper_id_2').alias('paper_id_right'), F.col('work_author_id_2').alias('work_author_id_right'), F.col('orcid_2').alias('orcid_right'), 
-                        F.col('citations_2').alias('citations_right'), F.col('institutions_2').alias('institutions_right'), F.col('trans_name').alias('trans_name_right'), 
-                        F.col('author_id'), F.col('topic_id').alias('topic_id_right'), F.col('topic_name').alias('topic_name_right'), 
-                        F.col('concepts_shorter_2').alias('concepts_shorter_right'), F.col('coauthors_shorter_2').alias('coauthors_shorter_right'),
-                        F.col('subfield_id').alias('subfield_id_right'), F.col('field_id').alias('field_id_right'), F.col('coauthor_orcids').alias('coauthor_orcids_right')) \
-        .filter((F.size(F.col('citations_right'))>0) | 
-                (F.size(F.col('institutions_right'))>0) | 
-                (F.size(F.col('coauthor_orcids_right'))>0) | 
-                (F.size(F.col('concepts_shorter_right'))>0) | 
-                (F.size(F.col('coauthors_shorter_right'))>0) | 
-                (F.col('topic_id_right') != -1)) \
-        .groupBy(['author_id','work_author_id_right']) \
-        .agg(F.collect_list(F.col('citations_right')).alias('citations_right'), 
-            F.collect_list(F.col('institutions_right')).alias('institutions_right'), 
-            F.collect_list(F.col('trans_name_right')).alias('trans_name_right'), 
-            F.collect_list(F.col('coauthor_orcids_right')).alias('coauthor_orcids_right'), 
-            F.collect_list(F.col('concepts_shorter_right')).alias('concepts_shorter_right'), 
-            F.collect_list(F.col('coauthors_shorter_right')).alias('coauthors_shorter_right'), 
-            F.collect_set(F.col('topic_id_right')).alias('topic_id_right'), 
-            F.collect_set(F.col('subfield_id_right')).alias('subfield_id_right'), 
-            F.collect_set(F.col('field_id_right')).alias('field_id_right')) \
-        .select('author_id','work_author_id_right', 
-                F.array_distinct(F.col('trans_name_right')).alias('trans_name_right'),
-                F.array_remove(F.array_distinct(F.col('topic_id_right')), -1).alias('topic_id_right'), 
-                F.array_remove(F.array_distinct(F.col('subfield_id_right')), -1).alias('subfield_id_right'), 
-                F.array_remove(F.array_distinct(F.col('field_id_right')), -1).alias('field_id_right'),
-                F.array_distinct(F.flatten(F.col('citations_right'))).alias('citations_right'), 
-                F.array_distinct(F.flatten(F.col('institutions_right'))).alias('institutions_right'), 
-                F.array_remove(F.array_distinct(F.flatten(F.col('coauthor_orcids_right'))), "").alias('coauthor_orcids_right'), 
-                F.array_distinct(F.flatten(F.col('concepts_shorter_right'))).alias('concepts_shorter_right'), 
-                F.array_distinct(F.flatten(F.col('coauthors_shorter_right'))).alias('coauthors_shorter_right')) \
-        .withColumn('name_match_list_right', get_name_match_from_alternate_names('trans_name_right'))
-    
-    print("Round 1 Left side: ", left_side.cache().count())
-    print("Round 1 Right side: ", right_side.cache().count())
+        work_topics = spark.read.parquet(f"{database_copy_save_path}/mid/work_topic").dropDuplicates() \
+            .filter(F.col('topic_rank')==1) \
+            .select(F.col('paper_id').alias('paper_id_2'), 'topic_id') \
+            .join(topics, on='topic_id', how='inner')
 
-    joined_df = left_side.join(right_side, how='inner', on='author_id')\
-        .withColumn('insts_inter', F.size(F.array_intersect(F.col('institutions_left'), F.col('institutions_right')))*2) \
-        .withColumn('coauths_inter', F.size(F.array_intersect(F.col('coauthors_shorter_left'), F.col('coauthors_shorter_right')))*0.05) \
-        .withColumn('concps_inter', F.size(F.array_intersect(F.col('concepts_shorter_left'), F.col('concepts_shorter_right')))*0.01) \
-        .withColumn('cites_inter', F.size(F.array_intersect(F.col('citations_left'), F.col('citations_right')))*0.2) \
-        .withColumn('coauth_orcids_inter', F.size(F.array_intersect(F.col('coauthor_orcids_left'), F.col('coauthor_orcids_right')))*5) \
-        .withColumn('topics_inter', F.size(F.array_intersect(F.col('topic_id_left'), F.col('topic_id_right')))*5) \
-        .withColumn('subfields_inter', F.size(F.array_intersect(F.col('subfield_id_left'), F.col('subfield_id_right')))*1) \
-        .withColumn('fields_inter', F.size(F.array_intersect(F.col('field_id_left'), F.col('field_id_right')))*0.01) \
-        .select('author_id','orcid_left','trans_name_left','work_author_id_right','trans_name_right','insts_inter','coauths_inter','concps_inter','cites_inter',
-                'coauth_orcids_inter','topics_inter','subfields_inter','fields_inter','name_match_list_left','name_match_list_right') \
-        .withColumn('total_score', F.col('insts_inter') + F.col('coauths_inter') + F.col('concps_inter') + F.col('cites_inter') + F.col('coauth_orcids_inter') + 
-                    F.col('topics_inter') + F.col('subfields_inter') + F.col('fields_inter')) \
-        .filter(F.col('total_score')>0) \
-        .withColumn('matched_names', check_block_vs_block(F.col('name_match_list_left'), F.col('name_match_list_right'))) \
-        .filter(F.col('matched_names')==1)
+        # Creating a feature table of all work_authors that need to be reclustered
+        spark.read.parquet(f"{prod_save_path}/current_features_table/") \
+            .join(curr_authors_grouped.select('author_id',F.explode('work_author_ids').alias('work_author_id_2'), 'orcid_len'), how='inner', on='work_author_id_2') \
+            .select('work_author_id_2', 'citations_2', 'institutions_2', 'author_2', 'paper_id_2', 'original_author', 
+                    'concepts_shorter_2', 'coauthors_shorter_2','author_id','orcid_len') \
+            .join(source_orcid_final_table.select(F.concat_ws("_", F.col('paper_id'), F.col('author_sequence_number')).alias('work_author_id_2'), 
+                                                F.col('final_orcid').alias('orcid_2')), how='left', on='work_author_id_2') \
+            .fillna("", subset=['orcid_2']) \
+            .join(work_topics, how='left', on='paper_id_2') \
+            .join(coauthor_orcids, how='left', on=['paper_id_2','work_author_id_2']) \
+            .withColumn('coauthor_orcids', transform_list_col_for_nulls_string(F.col('coauthor_orcids'))) \
+            .withColumn('coauthor_orcids', remove_current_author(F.col('orcid_2'), F.col('coauthor_orcids'))) \
+            .write.mode('overwrite') \
+            .parquet(f"{temp_save_path}/features_table_to_recluster_orcid/")
 
-    work_authors_scored = joined_df\
-        .repartition(320) \
-        .select('author_id',F.array([F.array(F.col('orcid_left')), 'trans_name_left' ,F.array(F.col('work_author_id_right')), 
-                                    'trans_name_right',F.array(F.col('total_score').cast(StringType()))]).alias('data_to_cluster')) \
-        .groupBy('author_id').agg(F.collect_list(F.col('data_to_cluster')).alias('data_to_cluster')) \
-        .withColumn('work_author_to_orcid_mapping', go_through_rows_for_author('data_to_cluster')) \
-        .select('author_id',F.explode('work_author_to_orcid_mapping').alias('work_author_to_orcid_mapping')) \
-        .select('author_id', 
-                F.col('work_author_to_orcid_mapping').getItem(0).alias('orcid_left'), 
-                F.col('work_author_to_orcid_mapping').getItem(1).alias('work_author_id_left'))
+        all_features = spark.read.parquet(f"{temp_save_path}/features_table_to_recluster_orcid/")
 
-    work_authors_scored.cache().count()
+        print("Size of reclustering DF: ", spark.read.parquet(f"{temp_save_path}/features_table_to_recluster_orcid/").dropDuplicates(subset=['work_author_id_2']).count())
 
-    new_to_cluster = all_features.alias('left_side_new').filter(F.col('orcid_len')>=2)\
-        .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
-        .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
-        .filter(F.col('name_to_keep_ind')==1) \
-        .withColumn('trans_name', transform_name_for_search(F.col('author_2'))) \
-        .withColumn('name_len', F.length(F.col('trans_name'))) \
-        .filter(F.col('name_len')>1) \
-        .fillna(-1, subset=['topic_id','subfield_id','field_id']) \
-        .select(F.col('paper_id_2').alias('paper_id_left'), F.col('work_author_id_2').alias('work_author_id_left'), 
-                        F.col('citations_2').alias('citations_left'), F.col('institutions_2').alias('institutions_left'), F.col('trans_name').alias('trans_name_left'), 
-                        F.col('author_id'), F.col('topic_id').alias('topic_id_left'), F.col('topic_name').alias('topic_name_left'), 
-                        F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
-                        F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left')) \
-        .join(work_authors_scored, how='inner', on=['author_id', 'work_author_id_left'])
+        # Getting the ORCID that will retain the author ID for each multi-orcid author ID
+        w_orc = Window.partitionBy('author_id').orderBy([F.col('count').desc(), F.col('orcid_2')])
+        author_ids_keep_orcid = spark.read.parquet(f"{temp_save_path}/features_table_to_recluster_orcid/") \
+            .filter(F.col('orcid_2')!='')\
+            .groupBy(['author_id','orcid_2']).count() \
+            .withColumn('orcid_rank', F.row_number().over(w_orc)) \
+            .filter(F.col('orcid_rank')==1)
 
-    if new_to_cluster.count() == right_side.count():
-        (all_features.alias('left_side_original').filter(F.col('orcid_len')>=2)
-            .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2')))
-            .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups'))
-            .filter(F.col('name_to_keep_ind')==1)
-            .withColumn('trans_name', transform_name_for_search(F.col('author_2')))
-            .withColumn('name_len', F.length(F.col('trans_name')))
-            .filter(F.col('name_len')>1)
-            .fillna(-1, subset=['topic_id','subfield_id','field_id'])
-            .select(F.col('paper_id_2').alias('paper_id_left'), F.col('work_author_id_2').alias('work_author_id_left'), F.col('orcid_2').alias('orcid_left'), 
-                            F.col('citations_2').alias('citations_left'), F.col('institutions_2').alias('institutions_left'), F.col('trans_name').alias('trans_name_left'), 
-                            F.col('author_id'), F.col('topic_id').alias('topic_id_left'), F.col('topic_name').alias('topic_name_left'), 
-                            F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
-                            F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left'))
-            .filter(F.col('orcid_left')!='')
-            .union(new_to_cluster.select('paper_id_left', 'work_author_id_left', 'orcid_left', 'citations_left', 'institutions_left', 'trans_name_left', 
-                                        'author_id', 'topic_id_left', 'topic_name_left', 'concepts_shorter_left', 'coauthors_shorter_left', 
-                                        'subfield_id_left', 'field_id_left', 'coauthor_orcids_left'))
-            .groupBy(['author_id','orcid_left']) \
-            .agg(F.collect_set(F.col('work_author_id_left')).alias('work_author_id_left')) \
-            .join(author_ids_keep_orcid.select('author_id', F.col('orcid_2').alias('orcid_left')), how='leftanti', on=['author_id','orcid_left'])
-            .select(F.concat_ws("-", F.col('author_id'), F.col('orcid_left')).alias('work_author_id_for_cluster'), 
-                            F.explode('work_author_id_left').alias('all_works_to_cluster'))
-            .withColumn("request_type", F.lit("orcid"))
-            .withColumn("request_date", F.current_timestamp())
-            .withColumn("partition_col", (F.rand()*40+1).cast(IntegerType()))
-            .repartition(6)
-            .write.format("jdbc") 
-            .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
-            .option("dbtable", 'authorships.overmerged_authors') 
-            .option("user", secret['username']) 
-            .option("password", secret['password']) 
-            .option("driver", "org.postgresql.Driver") 
-            .mode("append") 
-            .save())
-    else:
-        #################################### Round 2 of reclustering ####################################
-        left_side_2 = all_features.alias('left_side_original').filter(F.col('orcid_len')>=2) \
+        print("Number of author IDs to keep: ", author_ids_keep_orcid.cache().count())
+
+        #################################### Round 1 of reclustering ####################################
+        left_side = spark.read.parquet(f"{temp_save_path}/features_table_to_recluster_orcid/").filter(F.col('orcid_len')>=2) \
             .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
             .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
             .filter(F.col('name_to_keep_ind')==1) \
@@ -1471,9 +1520,6 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                             F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
                             F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left')) \
             .filter(F.col('orcid_left')!='') \
-            .union(new_to_cluster.select('paper_id_left', 'work_author_id_left', 'orcid_left', 'citations_left', 'institutions_left', 'trans_name_left', 
-                                        'author_id', 'topic_id_left', 'topic_name_left', 'concepts_shorter_left', 'coauthors_shorter_left', 
-                                        'subfield_id_left', 'field_id_left', 'coauthor_orcids_left')) \
             .groupBy(['author_id','orcid_left']) \
             .agg(F.collect_set(F.col('work_author_id_left')).alias('work_author_id_left'), 
                 F.collect_list(F.col('citations_left')).alias('citations_left'), 
@@ -1498,7 +1544,7 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
             .withColumn('name_match_list_left', get_name_match_from_alternate_names('trans_name_left'))
 
 
-        right_side_2 = all_features.alias('right_side').filter(F.col('orcid_len')>=2) \
+        right_side = spark.read.parquet(f"{temp_save_path}/features_table_to_recluster_orcid/").filter(F.col('orcid_len')>=2) \
             .filter(F.col('orcid_2')=='') \
             .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
             .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
@@ -1513,7 +1559,6 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                             F.col('author_id'), F.col('topic_id').alias('topic_id_right'), F.col('topic_name').alias('topic_name_right'), 
                             F.col('concepts_shorter_2').alias('concepts_shorter_right'), F.col('coauthors_shorter_2').alias('coauthors_shorter_right'),
                             F.col('subfield_id').alias('subfield_id_right'), F.col('field_id').alias('field_id_right'), F.col('coauthor_orcids').alias('coauthor_orcids_right')) \
-            .join(work_authors_scored.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), how='leftanti', on=['author_id', 'work_author_id_right']) \
             .filter((F.size(F.col('citations_right'))>0) | 
                     (F.size(F.col('institutions_right'))>0) | 
                     (F.size(F.col('coauthor_orcids_right'))>0) | 
@@ -1541,11 +1586,11 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                     F.array_distinct(F.flatten(F.col('concepts_shorter_right'))).alias('concepts_shorter_right'), 
                     F.array_distinct(F.flatten(F.col('coauthors_shorter_right'))).alias('coauthors_shorter_right')) \
             .withColumn('name_match_list_right', get_name_match_from_alternate_names('trans_name_right'))
+        
+        print("Round 1 Left side: ", left_side.cache().count())
+        print("Round 1 Right side: ", right_side.cache().count())
 
-        print("Round 2 Left side: ", left_side_2.cache().count())
-        print("Round 2 Right side: ", right_side_2.cache().count())
-
-        joined_df_2 = left_side_2.join(right_side_2, how='inner', on='author_id')\
+        joined_df = left_side.join(right_side, how='inner', on='author_id')\
             .withColumn('insts_inter', F.size(F.array_intersect(F.col('institutions_left'), F.col('institutions_right')))*2) \
             .withColumn('coauths_inter', F.size(F.array_intersect(F.col('coauthors_shorter_left'), F.col('coauthors_shorter_right')))*0.05) \
             .withColumn('concps_inter', F.size(F.array_intersect(F.col('concepts_shorter_left'), F.col('concepts_shorter_right')))*0.01) \
@@ -1561,10 +1606,11 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
             .filter(F.col('total_score')>0) \
             .withColumn('matched_names', check_block_vs_block(F.col('name_match_list_left'), F.col('name_match_list_right'))) \
             .filter(F.col('matched_names')==1)
-        
-        work_authors_scored_2 = joined_df_2\
+
+        work_authors_scored = joined_df\
+            .repartition(320) \
             .select('author_id',F.array([F.array(F.col('orcid_left')), 'trans_name_left' ,F.array(F.col('work_author_id_right')), 
-                                         'trans_name_right',F.array(F.col('total_score').cast(StringType()))]).alias('data_to_cluster')) \
+                                        'trans_name_right',F.array(F.col('total_score').cast(StringType()))]).alias('data_to_cluster')) \
             .groupBy('author_id').agg(F.collect_list(F.col('data_to_cluster')).alias('data_to_cluster')) \
             .withColumn('work_author_to_orcid_mapping', go_through_rows_for_author('data_to_cluster')) \
             .select('author_id',F.explode('work_author_to_orcid_mapping').alias('work_author_to_orcid_mapping')) \
@@ -1572,9 +1618,9 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                     F.col('work_author_to_orcid_mapping').getItem(0).alias('orcid_left'), 
                     F.col('work_author_to_orcid_mapping').getItem(1).alias('work_author_id_left'))
 
-        work_authors_scored_2.cache().count()
+        work_authors_scored.cache().count()
 
-        new_to_cluster_2 = all_features.alias('left_side_2_new').filter(F.col('orcid_len')>=2)\
+        new_to_cluster = all_features.alias('left_side_new').filter(F.col('orcid_len')>=2)\
             .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
             .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
             .filter(F.col('name_to_keep_ind')==1) \
@@ -1587,9 +1633,9 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                             F.col('author_id'), F.col('topic_id').alias('topic_id_left'), F.col('topic_name').alias('topic_name_left'), 
                             F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
                             F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left')) \
-            .join(work_authors_scored_2.union(work_authors_scored.select(*work_authors_scored_2.columns)), how='inner', on=['author_id', 'work_author_id_left'])
+            .join(work_authors_scored, how='inner', on=['author_id', 'work_author_id_left'])
 
-        if new_to_cluster_2.count() == right_side.count():
+        if new_to_cluster.count() == right_side.count():
             (all_features.alias('left_side_original').filter(F.col('orcid_len')>=2)
                 .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2')))
                 .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups'))
@@ -1604,14 +1650,16 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                                 F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
                                 F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left'))
                 .filter(F.col('orcid_left')!='')
-                .union(new_to_cluster_2.select('paper_id_left', 'work_author_id_left', 'orcid_left', 'citations_left', 'institutions_left', 'trans_name_left', 
+                .union(new_to_cluster.select('paper_id_left', 'work_author_id_left', 'orcid_left', 'citations_left', 'institutions_left', 'trans_name_left', 
                                             'author_id', 'topic_id_left', 'topic_name_left', 'concepts_shorter_left', 'coauthors_shorter_left', 
                                             'subfield_id_left', 'field_id_left', 'coauthor_orcids_left'))
                 .groupBy(['author_id','orcid_left']) \
                 .agg(F.collect_set(F.col('work_author_id_left')).alias('work_author_id_left')) \
                 .join(author_ids_keep_orcid.select('author_id', F.col('orcid_2').alias('orcid_left')), how='leftanti', on=['author_id','orcid_left'])
-                .select(F.concat_ws("-", F.col('author_id'), F.col('orcid_left')).alias('work_author_id_for_cluster'), 
-                                F.explode('work_author_id_left').alias('all_works_to_cluster'))
+                .withColumn('current_date_str', F.current_date().cast(StringType()))
+                .select(F.concat_ws("-", F.col('author_id'), F.lit('orc'), F.col('orcid_left'), 
+                                    F.col('current_date_str')).alias('work_author_id_for_cluster'), 
+                        F.explode('work_author_id_left').alias('all_works_to_cluster'))
                 .withColumn("request_type", F.lit("orcid"))
                 .withColumn("request_date", F.current_timestamp())
                 .withColumn("partition_col", (F.rand()*40+1).cast(IntegerType()))
@@ -1625,8 +1673,8 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                 .mode("append") 
                 .save())
         else:
-            #################################### Round 3 of reclustering ####################################
-            left_side_3 = all_features.alias('left_side_2').filter(F.col('orcid_len')>=2) \
+            #################################### Round 2 of reclustering ####################################
+            left_side_2 = all_features.alias('left_side_original').filter(F.col('orcid_len')>=2) \
                 .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
                 .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
                 .filter(F.col('name_to_keep_ind')==1) \
@@ -1640,10 +1688,9 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                                 F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
                                 F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left')) \
                 .filter(F.col('orcid_left')!='') \
-                .union(new_to_cluster_2.select('paper_id_left', 'work_author_id_left', 'orcid_left', 'citations_left', 'institutions_left', 
-                                            'trans_name_left', 'author_id', 
-                                            'topic_id_left', 'topic_name_left', 'concepts_shorter_left', 'coauthors_shorter_left', 'subfield_id_left',
-                                            'field_id_left', 'coauthor_orcids_left')) \
+                .union(new_to_cluster.select('paper_id_left', 'work_author_id_left', 'orcid_left', 'citations_left', 'institutions_left', 'trans_name_left', 
+                                            'author_id', 'topic_id_left', 'topic_name_left', 'concepts_shorter_left', 'coauthors_shorter_left', 
+                                            'subfield_id_left', 'field_id_left', 'coauthor_orcids_left')) \
                 .groupBy(['author_id','orcid_left']) \
                 .agg(F.collect_set(F.col('work_author_id_left')).alias('work_author_id_left'), 
                     F.collect_list(F.col('citations_left')).alias('citations_left'), 
@@ -1668,7 +1715,7 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                 .withColumn('name_match_list_left', get_name_match_from_alternate_names('trans_name_left'))
 
 
-            right_side_3 = all_features.alias('right_side_2').filter(F.col('orcid_len')>=2) \
+            right_side_2 = all_features.alias('right_side').filter(F.col('orcid_len')>=2) \
                 .filter(F.col('orcid_2')=='') \
                 .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
                 .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
@@ -1683,10 +1730,7 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                                 F.col('author_id'), F.col('topic_id').alias('topic_id_right'), F.col('topic_name').alias('topic_name_right'), 
                                 F.col('concepts_shorter_2').alias('concepts_shorter_right'), F.col('coauthors_shorter_2').alias('coauthors_shorter_right'),
                                 F.col('subfield_id').alias('subfield_id_right'), F.col('field_id').alias('field_id_right'), F.col('coauthor_orcids').alias('coauthor_orcids_right')) \
-                .join(work_authors_scored.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), 
-                    how='leftanti', on=['author_id', 'work_author_id_right']) \
-                .join(work_authors_scored_2.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), 
-                    how='leftanti', on=['author_id', 'work_author_id_right']) \
+                .join(work_authors_scored.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), how='leftanti', on=['author_id', 'work_author_id_right']) \
                 .filter((F.size(F.col('citations_right'))>0) | 
                         (F.size(F.col('institutions_right'))>0) | 
                         (F.size(F.col('coauthor_orcids_right'))>0) | 
@@ -1714,11 +1758,11 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                         F.array_distinct(F.flatten(F.col('concepts_shorter_right'))).alias('concepts_shorter_right'), 
                         F.array_distinct(F.flatten(F.col('coauthors_shorter_right'))).alias('coauthors_shorter_right')) \
                 .withColumn('name_match_list_right', get_name_match_from_alternate_names('trans_name_right'))
-            
-            print("Round 3 Left side: ", left_side_3.cache().count())
-            print("Round 3 Right side: ", right_side_3.cache().count())
 
-            joined_df_3 = left_side_3.join(right_side_3, how='inner', on='author_id')\
+            print("Round 2 Left side: ", left_side_2.cache().count())
+            print("Round 2 Right side: ", right_side_2.cache().count())
+
+            joined_df_2 = left_side_2.join(right_side_2, how='inner', on='author_id')\
                 .withColumn('insts_inter', F.size(F.array_intersect(F.col('institutions_left'), F.col('institutions_right')))*2) \
                 .withColumn('coauths_inter', F.size(F.array_intersect(F.col('coauthors_shorter_left'), F.col('coauthors_shorter_right')))*0.05) \
                 .withColumn('concps_inter', F.size(F.array_intersect(F.col('concepts_shorter_left'), F.col('concepts_shorter_right')))*0.01) \
@@ -1735,9 +1779,9 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                 .withColumn('matched_names', check_block_vs_block(F.col('name_match_list_left'), F.col('name_match_list_right'))) \
                 .filter(F.col('matched_names')==1)
             
-            work_authors_scored_3 = joined_df_3\
+            work_authors_scored_2 = joined_df_2\
                 .select('author_id',F.array([F.array(F.col('orcid_left')), 'trans_name_left' ,F.array(F.col('work_author_id_right')), 
-                                             'trans_name_right',F.array(F.col('total_score').cast(StringType()))]).alias('data_to_cluster')) \
+                                            'trans_name_right',F.array(F.col('total_score').cast(StringType()))]).alias('data_to_cluster')) \
                 .groupBy('author_id').agg(F.collect_list(F.col('data_to_cluster')).alias('data_to_cluster')) \
                 .withColumn('work_author_to_orcid_mapping', go_through_rows_for_author('data_to_cluster')) \
                 .select('author_id',F.explode('work_author_to_orcid_mapping').alias('work_author_to_orcid_mapping')) \
@@ -1745,9 +1789,9 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                         F.col('work_author_to_orcid_mapping').getItem(0).alias('orcid_left'), 
                         F.col('work_author_to_orcid_mapping').getItem(1).alias('work_author_id_left'))
 
-            work_authors_scored_3.cache().count()
+            work_authors_scored_2.cache().count()
 
-            new_to_cluster_3 = all_features.alias('left_side_3_new').filter(F.col('orcid_len')>=2)\
+            new_to_cluster_2 = all_features.alias('left_side_2_new').filter(F.col('orcid_len')>=2)\
                 .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
                 .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
                 .filter(F.col('name_to_keep_ind')==1) \
@@ -1756,92 +1800,37 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                 .filter(F.col('name_len')>1) \
                 .fillna(-1, subset=['topic_id','subfield_id','field_id']) \
                 .select(F.col('paper_id_2').alias('paper_id_left'), F.col('work_author_id_2').alias('work_author_id_left'), 
-                                F.col('citations_2').alias('citations_left'), F.col('institutions_2').alias('institutions_left'), 
-                                F.col('trans_name').alias('trans_name_left'), 
-                                F.col('author_id'), F.col('topic_id').alias('topic_id_left'), F.col('topic_name').alias('topic_name_left'), 
-                                F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
-                                F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), 
-                                F.col('coauthor_orcids').alias('coauthor_orcids_left')) \
-                .join(work_authors_scored_3
-                    .union(work_authors_scored_2.select(*work_authors_scored_3.columns))
-                    .union(work_authors_scored.select(*work_authors_scored_3.columns)), 
-                    how='inner', on=['author_id', 'work_author_id_left'])
-            
-            #################################### Writing final results to overmerge tables ####################################    
-            (all_features.alias('left_side_3').filter(F.col('orcid_len')>=2)
-                .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2')))
-                .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
-                .filter(F.col('name_to_keep_ind')==1) \
-                .withColumn('trans_name', transform_name_for_search(F.col('author_2')))
-                .withColumn('name_len', F.length(F.col('trans_name')))
-                .filter(F.col('name_len')>1)
-                .fillna(-1, subset=['topic_id','subfield_id','field_id'])
-                .select(F.col('paper_id_2').alias('paper_id_left'), F.col('work_author_id_2').alias('work_author_id_left'), F.col('orcid_2').alias('orcid_left'), 
                                 F.col('citations_2').alias('citations_left'), F.col('institutions_2').alias('institutions_left'), F.col('trans_name').alias('trans_name_left'), 
                                 F.col('author_id'), F.col('topic_id').alias('topic_id_left'), F.col('topic_name').alias('topic_name_left'), 
                                 F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
-                                F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left'))
-                .filter(F.col('orcid_left')!='')
-                .union(new_to_cluster_3.select('paper_id_left', 'work_author_id_left', 'orcid_left', 'citations_left', 'institutions_left', 
-                                            'trans_name_left', 'author_id', 
-                                            'topic_id_left', 'topic_name_left', 'concepts_shorter_left', 'coauthors_shorter_left', 'subfield_id_left',
-                                            'field_id_left', 'coauthor_orcids_left'))
-                .groupBy(['author_id','orcid_left'])
-                .agg(F.collect_set(F.col('work_author_id_left')).alias('work_author_id_left'))
-                .join(author_ids_keep_orcid.select('author_id', F.col('orcid_2').alias('orcid_left')), how='leftanti', on=['author_id','orcid_left'])
-                .select(F.concat_ws("-", F.col('author_id'), F.col('orcid_left')).alias('work_author_id_for_cluster'), 
-                                F.explode('work_author_id_left').alias('all_works_to_cluster'))
-                .withColumn("request_type", F.lit("orcid"))
-                .withColumn("request_date", F.current_timestamp())
-                .withColumn("partition_col", (F.rand()*40+1).cast(IntegerType()))
-                .repartition(6)
-                .write.format("jdbc") 
-                .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
-                .option("dbtable", 'authorships.overmerged_authors') 
-                .option("user", secret['username']) 
-                .option("password", secret['password']) 
-                .option("driver", "org.postgresql.Driver") 
-                .mode("append") 
-                .save())
+                                F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left')) \
+                .join(work_authors_scored_2.union(work_authors_scored.select(*work_authors_scored_2.columns)), how='inner', on=['author_id', 'work_author_id_left'])
 
-            right_side_4 = all_features.alias('right_side_3').filter(F.col('orcid_len')>=2) \
-                .filter(F.col('orcid_2')=='') \
-                .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
-                .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
-                .filter(F.col('name_to_keep_ind')==1) \
-                .withColumn('trans_name', transform_name_for_search(F.col('author_2'))) \
-                .withColumn('name_len', F.length(F.col('trans_name'))) \
-                .filter(F.col('name_len')>1) \
-                .withColumn('name_match_list', get_name_match_list(F.col('trans_name'))) \
-                .fillna(-1, subset=['topic_id','subfield_id','field_id']) \
-                .select(F.col('paper_id_2').alias('paper_id_right'), F.col('work_author_id_2').alias('work_author_id_right'), F.col('orcid_2').alias('orcid_right'), 
-                                F.col('citations_2').alias('citations_right'), F.col('institutions_2').alias('institutions_right'), F.col('trans_name').alias('trans_name_right'), 
-                                F.col('author_id'), F.col('topic_id').alias('topic_id_right'), F.col('topic_name').alias('topic_name_right'), 
-                                F.col('concepts_shorter_2').alias('concepts_shorter_right'), F.col('coauthors_shorter_2').alias('coauthors_shorter_right'),
-                                F.col('subfield_id').alias('subfield_id_right'), F.col('field_id').alias('field_id_right'), F.col('coauthor_orcids').alias('coauthor_orcids_right')) \
-                .join(work_authors_scored.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), 
-                    how='leftanti', on=['author_id', 'work_author_id_right']) \
-                .join(work_authors_scored_2.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), 
-                    how='leftanti', on=['author_id', 'work_author_id_right']) \
-                .join(work_authors_scored_3.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), 
-                    how='leftanti', on=['author_id', 'work_author_id_right'])
-                
-            if right_side_4.count() > 0:
-                print("Getting leftovers grouped")
-                leftover_groups = right_side_4.select('author_id', 'trans_name_right', 'work_author_id_right') \
-                    .groupBy(['author_id','trans_name_right']).agg(F.collect_list(F.col('work_author_id_right')).alias('work_author_id_right')) \
-                    .select('author_id', 
-                                F.array([F.array(F.col('trans_name_right')).alias('trans_name_right'),
-                                F.col('work_author_id_right')]).alias('data_to_cluster')) \
-                    .groupBy('author_id').agg(F.collect_list('data_to_cluster').alias('data_to_cluster')) \
-                    .withColumn('work_author_to_group_mapping', go_through_leftovers_for_author('data_to_cluster')) \
-                    .select('author_id',F.explode('work_author_to_group_mapping').alias('work_author_to_group_mapping')) \
-                    .select('author_id', 
-                            F.col('work_author_to_group_mapping').getItem(0).getItem(0).alias('group_cluster_id'), 
-                            F.col('work_author_to_group_mapping').getItem(1).alias('work_author_id_left'))
-                    
-                (leftover_groups.select(F.col('group_cluster_id').alias('work_author_id_for_cluster'), 
-                                        F.explode('work_author_id_left').alias('all_works_to_cluster'))
+            if new_to_cluster_2.count() == right_side.count():
+                (all_features.alias('left_side_original').filter(F.col('orcid_len')>=2)
+                    .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2')))
+                    .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups'))
+                    .filter(F.col('name_to_keep_ind')==1)
+                    .withColumn('trans_name', transform_name_for_search(F.col('author_2')))
+                    .withColumn('name_len', F.length(F.col('trans_name')))
+                    .filter(F.col('name_len')>1)
+                    .fillna(-1, subset=['topic_id','subfield_id','field_id'])
+                    .select(F.col('paper_id_2').alias('paper_id_left'), F.col('work_author_id_2').alias('work_author_id_left'), F.col('orcid_2').alias('orcid_left'), 
+                                    F.col('citations_2').alias('citations_left'), F.col('institutions_2').alias('institutions_left'), F.col('trans_name').alias('trans_name_left'), 
+                                    F.col('author_id'), F.col('topic_id').alias('topic_id_left'), F.col('topic_name').alias('topic_name_left'), 
+                                    F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
+                                    F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left'))
+                    .filter(F.col('orcid_left')!='')
+                    .union(new_to_cluster_2.select('paper_id_left', 'work_author_id_left', 'orcid_left', 'citations_left', 'institutions_left', 'trans_name_left', 
+                                                'author_id', 'topic_id_left', 'topic_name_left', 'concepts_shorter_left', 'coauthors_shorter_left', 
+                                                'subfield_id_left', 'field_id_left', 'coauthor_orcids_left'))
+                    .groupBy(['author_id','orcid_left']) \
+                    .agg(F.collect_set(F.col('work_author_id_left')).alias('work_author_id_left')) \
+                    .join(author_ids_keep_orcid.select('author_id', F.col('orcid_2').alias('orcid_left')), how='leftanti', on=['author_id','orcid_left'])
+                    .withColumn('current_date_str', F.current_date().cast(StringType()))
+                    .select(F.concat_ws("-", F.col('author_id'), F.lit('orc'), F.col('orcid_left'), 
+                                    F.col('current_date_str')).alias('work_author_id_for_cluster'), 
+                            F.explode('work_author_id_left').alias('all_works_to_cluster'))
                     .withColumn("request_type", F.lit("orcid"))
                     .withColumn("request_date", F.current_timestamp())
                     .withColumn("partition_col", (F.rand()*40+1).cast(IntegerType()))
@@ -1854,3 +1843,257 @@ if curr_authors_grouped.filter(F.col('orcid_len')>=2).count() > 0:
                     .option("driver", "org.postgresql.Driver") 
                     .mode("append") 
                     .save())
+            else:
+                #################################### Round 3 of reclustering ####################################
+                left_side_3 = all_features.alias('left_side_2').filter(F.col('orcid_len')>=2) \
+                    .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
+                    .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
+                    .filter(F.col('name_to_keep_ind')==1) \
+                    .withColumn('trans_name', transform_name_for_search(F.col('author_2'))) \
+                    .withColumn('name_len', F.length(F.col('trans_name'))) \
+                    .filter(F.col('name_len')>1) \
+                    .fillna(-1, subset=['topic_id','subfield_id','field_id']) \
+                    .select(F.col('paper_id_2').alias('paper_id_left'), F.col('work_author_id_2').alias('work_author_id_left'), F.col('orcid_2').alias('orcid_left'), 
+                                    F.col('citations_2').alias('citations_left'), F.col('institutions_2').alias('institutions_left'), F.col('trans_name').alias('trans_name_left'), 
+                                    F.col('author_id'), F.col('topic_id').alias('topic_id_left'), F.col('topic_name').alias('topic_name_left'), 
+                                    F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
+                                    F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left')) \
+                    .filter(F.col('orcid_left')!='') \
+                    .union(new_to_cluster_2.select('paper_id_left', 'work_author_id_left', 'orcid_left', 'citations_left', 'institutions_left', 
+                                                'trans_name_left', 'author_id', 
+                                                'topic_id_left', 'topic_name_left', 'concepts_shorter_left', 'coauthors_shorter_left', 'subfield_id_left',
+                                                'field_id_left', 'coauthor_orcids_left')) \
+                    .groupBy(['author_id','orcid_left']) \
+                    .agg(F.collect_set(F.col('work_author_id_left')).alias('work_author_id_left'), 
+                        F.collect_list(F.col('citations_left')).alias('citations_left'), 
+                        F.collect_list(F.col('institutions_left')).alias('institutions_left'), 
+                        F.collect_list(F.col('trans_name_left')).alias('trans_name_left'), 
+                        F.collect_list(F.col('coauthor_orcids_left')).alias('coauthor_orcids_left'), 
+                        F.collect_list(F.col('concepts_shorter_left')).alias('concepts_shorter_left'), 
+                        F.collect_list(F.col('coauthors_shorter_left')).alias('coauthors_shorter_left'), 
+                        F.collect_set(F.col('topic_id_left')).alias('topic_id_left'), 
+                        F.collect_set(F.col('subfield_id_left')).alias('subfield_id_left'), 
+                        F.collect_set(F.col('field_id_left')).alias('field_id_left')) \
+                    .select('author_id','orcid_left', 'work_author_id_left', 
+                            F.array_distinct(F.col('trans_name_left')).alias('trans_name_left'),
+                            F.array_remove(F.array_distinct(F.col('topic_id_left')), -1).alias('topic_id_left'), 
+                            F.array_remove(F.array_distinct(F.col('subfield_id_left')), -1).alias('subfield_id_left'), 
+                            F.array_remove(F.array_distinct(F.col('field_id_left')), -1).alias('field_id_left'),
+                            F.array_distinct(F.flatten(F.col('citations_left'))).alias('citations_left'), 
+                            F.array_distinct(F.flatten(F.col('institutions_left'))).alias('institutions_left'), 
+                            F.array_remove(F.array_distinct(F.flatten(F.col('coauthor_orcids_left'))), "").alias('coauthor_orcids_left'), 
+                            F.array_distinct(F.flatten(F.col('concepts_shorter_left'))).alias('concepts_shorter_left'), 
+                            F.array_distinct(F.flatten(F.col('coauthors_shorter_left'))).alias('coauthors_shorter_left')) \
+                    .withColumn('name_match_list_left', get_name_match_from_alternate_names('trans_name_left'))
+
+
+                right_side_3 = all_features.alias('right_side_2').filter(F.col('orcid_len')>=2) \
+                    .filter(F.col('orcid_2')=='') \
+                    .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
+                    .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
+                    .filter(F.col('name_to_keep_ind')==1) \
+                    .withColumn('trans_name', transform_name_for_search(F.col('author_2'))) \
+                    .withColumn('name_len', F.length(F.col('trans_name'))) \
+                    .filter(F.col('name_len')>1) \
+                    .withColumn('name_match_list', get_name_match_list(F.col('trans_name'))) \
+                    .fillna(-1, subset=['topic_id','subfield_id','field_id']) \
+                    .select(F.col('paper_id_2').alias('paper_id_right'), F.col('work_author_id_2').alias('work_author_id_right'), F.col('orcid_2').alias('orcid_right'), 
+                                    F.col('citations_2').alias('citations_right'), F.col('institutions_2').alias('institutions_right'), F.col('trans_name').alias('trans_name_right'), 
+                                    F.col('author_id'), F.col('topic_id').alias('topic_id_right'), F.col('topic_name').alias('topic_name_right'), 
+                                    F.col('concepts_shorter_2').alias('concepts_shorter_right'), F.col('coauthors_shorter_2').alias('coauthors_shorter_right'),
+                                    F.col('subfield_id').alias('subfield_id_right'), F.col('field_id').alias('field_id_right'), F.col('coauthor_orcids').alias('coauthor_orcids_right')) \
+                    .join(work_authors_scored.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), 
+                        how='leftanti', on=['author_id', 'work_author_id_right']) \
+                    .join(work_authors_scored_2.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), 
+                        how='leftanti', on=['author_id', 'work_author_id_right']) \
+                    .filter((F.size(F.col('citations_right'))>0) | 
+                            (F.size(F.col('institutions_right'))>0) | 
+                            (F.size(F.col('coauthor_orcids_right'))>0) | 
+                            (F.size(F.col('concepts_shorter_right'))>0) | 
+                            (F.size(F.col('coauthors_shorter_right'))>0) | 
+                            (F.col('topic_id_right') != -1)) \
+                    .groupBy(['author_id','work_author_id_right']) \
+                    .agg(F.collect_list(F.col('citations_right')).alias('citations_right'), 
+                        F.collect_list(F.col('institutions_right')).alias('institutions_right'), 
+                        F.collect_list(F.col('trans_name_right')).alias('trans_name_right'), 
+                        F.collect_list(F.col('coauthor_orcids_right')).alias('coauthor_orcids_right'), 
+                        F.collect_list(F.col('concepts_shorter_right')).alias('concepts_shorter_right'), 
+                        F.collect_list(F.col('coauthors_shorter_right')).alias('coauthors_shorter_right'), 
+                        F.collect_set(F.col('topic_id_right')).alias('topic_id_right'), 
+                        F.collect_set(F.col('subfield_id_right')).alias('subfield_id_right'), 
+                        F.collect_set(F.col('field_id_right')).alias('field_id_right')) \
+                    .select('author_id','work_author_id_right', 
+                            F.array_distinct(F.col('trans_name_right')).alias('trans_name_right'),
+                            F.array_remove(F.array_distinct(F.col('topic_id_right')), -1).alias('topic_id_right'), 
+                            F.array_remove(F.array_distinct(F.col('subfield_id_right')), -1).alias('subfield_id_right'), 
+                            F.array_remove(F.array_distinct(F.col('field_id_right')), -1).alias('field_id_right'),
+                            F.array_distinct(F.flatten(F.col('citations_right'))).alias('citations_right'), 
+                            F.array_distinct(F.flatten(F.col('institutions_right'))).alias('institutions_right'), 
+                            F.array_remove(F.array_distinct(F.flatten(F.col('coauthor_orcids_right'))), "").alias('coauthor_orcids_right'), 
+                            F.array_distinct(F.flatten(F.col('concepts_shorter_right'))).alias('concepts_shorter_right'), 
+                            F.array_distinct(F.flatten(F.col('coauthors_shorter_right'))).alias('coauthors_shorter_right')) \
+                    .withColumn('name_match_list_right', get_name_match_from_alternate_names('trans_name_right'))
+                
+                print("Round 3 Left side: ", left_side_3.cache().count())
+                print("Round 3 Right side: ", right_side_3.cache().count())
+
+                joined_df_3 = left_side_3.join(right_side_3, how='inner', on='author_id')\
+                    .withColumn('insts_inter', F.size(F.array_intersect(F.col('institutions_left'), F.col('institutions_right')))*2) \
+                    .withColumn('coauths_inter', F.size(F.array_intersect(F.col('coauthors_shorter_left'), F.col('coauthors_shorter_right')))*0.05) \
+                    .withColumn('concps_inter', F.size(F.array_intersect(F.col('concepts_shorter_left'), F.col('concepts_shorter_right')))*0.01) \
+                    .withColumn('cites_inter', F.size(F.array_intersect(F.col('citations_left'), F.col('citations_right')))*0.2) \
+                    .withColumn('coauth_orcids_inter', F.size(F.array_intersect(F.col('coauthor_orcids_left'), F.col('coauthor_orcids_right')))*5) \
+                    .withColumn('topics_inter', F.size(F.array_intersect(F.col('topic_id_left'), F.col('topic_id_right')))*5) \
+                    .withColumn('subfields_inter', F.size(F.array_intersect(F.col('subfield_id_left'), F.col('subfield_id_right')))*1) \
+                    .withColumn('fields_inter', F.size(F.array_intersect(F.col('field_id_left'), F.col('field_id_right')))*0.01) \
+                    .select('author_id','orcid_left','trans_name_left','work_author_id_right','trans_name_right','insts_inter','coauths_inter','concps_inter','cites_inter',
+                            'coauth_orcids_inter','topics_inter','subfields_inter','fields_inter','name_match_list_left','name_match_list_right') \
+                    .withColumn('total_score', F.col('insts_inter') + F.col('coauths_inter') + F.col('concps_inter') + F.col('cites_inter') + F.col('coauth_orcids_inter') + 
+                                F.col('topics_inter') + F.col('subfields_inter') + F.col('fields_inter')) \
+                    .filter(F.col('total_score')>0) \
+                    .withColumn('matched_names', check_block_vs_block(F.col('name_match_list_left'), F.col('name_match_list_right'))) \
+                    .filter(F.col('matched_names')==1)
+                
+                work_authors_scored_3 = joined_df_3\
+                    .select('author_id',F.array([F.array(F.col('orcid_left')), 'trans_name_left' ,F.array(F.col('work_author_id_right')), 
+                                                'trans_name_right',F.array(F.col('total_score').cast(StringType()))]).alias('data_to_cluster')) \
+                    .groupBy('author_id').agg(F.collect_list(F.col('data_to_cluster')).alias('data_to_cluster')) \
+                    .withColumn('work_author_to_orcid_mapping', go_through_rows_for_author('data_to_cluster')) \
+                    .select('author_id',F.explode('work_author_to_orcid_mapping').alias('work_author_to_orcid_mapping')) \
+                    .select('author_id', 
+                            F.col('work_author_to_orcid_mapping').getItem(0).alias('orcid_left'), 
+                            F.col('work_author_to_orcid_mapping').getItem(1).alias('work_author_id_left'))
+
+                work_authors_scored_3.cache().count()
+
+                new_to_cluster_3 = all_features.alias('left_side_3_new').filter(F.col('orcid_len')>=2)\
+                    .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
+                    .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
+                    .filter(F.col('name_to_keep_ind')==1) \
+                    .withColumn('trans_name', transform_name_for_search(F.col('author_2'))) \
+                    .withColumn('name_len', F.length(F.col('trans_name'))) \
+                    .filter(F.col('name_len')>1) \
+                    .fillna(-1, subset=['topic_id','subfield_id','field_id']) \
+                    .select(F.col('paper_id_2').alias('paper_id_left'), F.col('work_author_id_2').alias('work_author_id_left'), 
+                                    F.col('citations_2').alias('citations_left'), F.col('institutions_2').alias('institutions_left'), 
+                                    F.col('trans_name').alias('trans_name_left'), 
+                                    F.col('author_id'), F.col('topic_id').alias('topic_id_left'), F.col('topic_name').alias('topic_name_left'), 
+                                    F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
+                                    F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), 
+                                    F.col('coauthor_orcids').alias('coauthor_orcids_left')) \
+                    .join(work_authors_scored_3
+                        .union(work_authors_scored_2.select(*work_authors_scored_3.columns))
+                        .union(work_authors_scored.select(*work_authors_scored_3.columns)), 
+                        how='inner', on=['author_id', 'work_author_id_left'])
+                
+                #################################### Writing final results to overmerge tables ####################################    
+                (all_features.alias('left_side_3').filter(F.col('orcid_len')>=2)
+                    .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2')))
+                    .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
+                    .filter(F.col('name_to_keep_ind')==1) \
+                    .withColumn('trans_name', transform_name_for_search(F.col('author_2')))
+                    .withColumn('name_len', F.length(F.col('trans_name')))
+                    .filter(F.col('name_len')>1)
+                    .fillna(-1, subset=['topic_id','subfield_id','field_id'])
+                    .select(F.col('paper_id_2').alias('paper_id_left'), F.col('work_author_id_2').alias('work_author_id_left'), F.col('orcid_2').alias('orcid_left'), 
+                                    F.col('citations_2').alias('citations_left'), F.col('institutions_2').alias('institutions_left'), F.col('trans_name').alias('trans_name_left'), 
+                                    F.col('author_id'), F.col('topic_id').alias('topic_id_left'), F.col('topic_name').alias('topic_name_left'), 
+                                    F.col('concepts_shorter_2').alias('concepts_shorter_left'), F.col('coauthors_shorter_2').alias('coauthors_shorter_left'),
+                                    F.col('subfield_id').alias('subfield_id_left'), F.col('field_id').alias('field_id_left'), F.col('coauthor_orcids').alias('coauthor_orcids_left'))
+                    .filter(F.col('orcid_left')!='')
+                    .union(new_to_cluster_3.select('paper_id_left', 'work_author_id_left', 'orcid_left', 'citations_left', 'institutions_left', 
+                                                'trans_name_left', 'author_id', 
+                                                'topic_id_left', 'topic_name_left', 'concepts_shorter_left', 'coauthors_shorter_left', 'subfield_id_left',
+                                                'field_id_left', 'coauthor_orcids_left'))
+                    .groupBy(['author_id','orcid_left'])
+                    .agg(F.collect_set(F.col('work_author_id_left')).alias('work_author_id_left'))
+                    .join(author_ids_keep_orcid.select('author_id', F.col('orcid_2').alias('orcid_left')), how='leftanti', on=['author_id','orcid_left'])
+                    .withColumn('current_date_str', F.current_date().cast(StringType()))
+                    .select(F.concat_ws("-", F.col('author_id'), F.lit('orc'), F.col('orcid_left'), 
+                                    F.col('current_date_str')).alias('work_author_id_for_cluster'), 
+                            F.explode('work_author_id_left').alias('all_works_to_cluster'))
+                    .withColumn("request_type", F.lit("orcid"))
+                    .withColumn("request_date", F.current_timestamp())
+                    .withColumn("partition_col", (F.rand()*40+1).cast(IntegerType()))
+                    .repartition(6)
+                    .write.format("jdbc") 
+                    .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
+                    .option("dbtable", 'authorships.overmerged_authors') 
+                    .option("user", secret['username']) 
+                    .option("password", secret['password']) 
+                    .option("driver", "org.postgresql.Driver") 
+                    .mode("append") 
+                    .save())
+
+                right_side_4 = all_features.alias('right_side_3').filter(F.col('orcid_len')>=2) \
+                    .filter(F.col('orcid_2')=='') \
+                    .withColumn('non_latin_groups', group_non_latin_characters(F.col('author_2'))) \
+                    .withColumn('name_to_keep_ind', name_to_keep_ind('non_latin_groups')) \
+                    .filter(F.col('name_to_keep_ind')==1) \
+                    .withColumn('trans_name', transform_name_for_search(F.col('author_2'))) \
+                    .withColumn('name_len', F.length(F.col('trans_name'))) \
+                    .filter(F.col('name_len')>1) \
+                    .withColumn('name_match_list', get_name_match_list(F.col('trans_name'))) \
+                    .fillna(-1, subset=['topic_id','subfield_id','field_id']) \
+                    .select(F.col('paper_id_2').alias('paper_id_right'), F.col('work_author_id_2').alias('work_author_id_right'), F.col('orcid_2').alias('orcid_right'), 
+                                    F.col('citations_2').alias('citations_right'), F.col('institutions_2').alias('institutions_right'), F.col('trans_name').alias('trans_name_right'), 
+                                    F.col('author_id'), F.col('topic_id').alias('topic_id_right'), F.col('topic_name').alias('topic_name_right'), 
+                                    F.col('concepts_shorter_2').alias('concepts_shorter_right'), F.col('coauthors_shorter_2').alias('coauthors_shorter_right'),
+                                    F.col('subfield_id').alias('subfield_id_right'), F.col('field_id').alias('field_id_right'), F.col('coauthor_orcids').alias('coauthor_orcids_right')) \
+                    .join(work_authors_scored.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), 
+                        how='leftanti', on=['author_id', 'work_author_id_right']) \
+                    .join(work_authors_scored_2.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), 
+                        how='leftanti', on=['author_id', 'work_author_id_right']) \
+                    .join(work_authors_scored_3.select('author_id',F.col('work_author_id_left').alias('work_author_id_right')), 
+                        how='leftanti', on=['author_id', 'work_author_id_right'])
+                    
+                if right_side_4.count() > 0:
+                    print("Getting leftovers grouped")
+                    leftover_groups = right_side_4.select('author_id', 'trans_name_right', 'work_author_id_right') \
+                        .groupBy(['author_id','trans_name_right']).agg(F.collect_list(F.col('work_author_id_right')).alias('work_author_id_right')) \
+                        .select('author_id', 
+                                    F.array([F.array(F.col('trans_name_right')).alias('trans_name_right'),
+                                    F.col('work_author_id_right')]).alias('data_to_cluster')) \
+                        .groupBy('author_id').agg(F.collect_list('data_to_cluster').alias('data_to_cluster')) \
+                        .withColumn('work_author_to_group_mapping', go_through_leftovers_for_author('data_to_cluster')) \
+                        .select('author_id',F.explode('work_author_to_group_mapping').alias('work_author_to_group_mapping')) \
+                        .select('author_id', 
+                                F.col('work_author_to_group_mapping').getItem(0).getItem(0).alias('group_cluster_id'), 
+                                F.col('work_author_to_group_mapping').getItem(1).alias('work_author_id_left'))
+                        
+                    (leftover_groups
+                        .withColumn('current_date_str', F.current_date().cast(StringType()))
+                        .select(F.concat_ws("-", F.col('group_cluster_id'), F.lit('orc'), 
+                                    F.col('current_date_str')).alias('work_author_id_for_cluster'),
+                                F.explode('work_author_id_left').alias('all_works_to_cluster'))
+                        .withColumn("request_type", F.lit("orcid"))
+                        .withColumn("request_date", F.current_timestamp())
+                        .withColumn("partition_col", (F.rand()*40+1).cast(IntegerType()))
+                        .repartition(6)
+                        .write.format("jdbc") 
+                        .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
+                        .option("dbtable", 'authorships.overmerged_authors') 
+                        .option("user", secret['username']) 
+                        .option("password", secret['password']) 
+                        .option("driver", "org.postgresql.Driver") 
+                        .mode("append")
+                        .save())
+                
+                right_side_3.unpersist()
+                left_side_3.unpersist()
+                right_side_4.unpersist()
+                
+        # something here to depersist
+        author_ids_keep_orcid.unpersist()
+        left_side.unpersist()
+        right_side.unpersist()
+        work_authors_scored.unpersist()
+        work_authors_scored_2.unpersist()
+        work_authors_scored_3.unpersist()
+        left_side_2.unpersist()
+        right_side_2.unpersist()
+        all_features.unpersist()
+
+# COMMAND ----------
+
+

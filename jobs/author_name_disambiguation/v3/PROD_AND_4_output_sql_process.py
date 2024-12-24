@@ -3,6 +3,7 @@ import psycopg2
 import boto3
 import json
 import heroku3
+import time
 
 # COMMAND ----------
 
@@ -99,15 +100,26 @@ cur.execute("DROP TABLE if exists tmp_authorships_authors_modified")
 # COMMAND ----------
 
 update_query = \
-f"""create temp table tmp_authorships_authors_modified as (select * from authorships.authors_modified 
-where modified_date > now() - interval '6 hours');
-alter table tmp_authorships_authors_modified add column paper_id bigint generated always as (split_part(work_author_id, '_', 1)::bigint) stored;
-alter table tmp_authorships_authors_modified add column author_sequence_number integer generated always as (split_part(work_author_id, '_', 2)::integer) stored;
+f"""create temp table tmp_authorships_authors_modified as (select *, split_part(work_author_id, '_', 1)::bigint as paper_id, 
+split_part(work_author_id, '_', 2)::integer as author_sequence_number from authorships.authors_modified where modified_date > now() - interval '6 hours');
 create index on tmp_authorships_authors_modified (author_id_changed);
 create index on tmp_authorships_authors_modified (author_id);"""
 
 cur.execute(update_query)
 conn.commit()
+
+# COMMAND ----------
+
+# update_query = \
+# f"""create temp table tmp_authorships_authors_modified as (select *, split_part(work_author_id, '_', 1)::bigint as paper_id, 
+# split_part(work_author_id, '_', 2)::integer as author_sequence_number from authorships.authors_modified where modified_date > now() - interval '6 hours');
+# alter table tmp_authorships_authors_modified add column paper_id bigint generated always as (split_part(work_author_id, '_', 1)::bigint) stored;
+# alter table tmp_authorships_authors_modified add column author_sequence_number integer generated always as (split_part(work_author_id, '_', 2)::integer) stored;
+# create index on tmp_authorships_authors_modified (author_id_changed);
+# create index on tmp_authorships_authors_modified (author_id);"""
+
+# cur.execute(update_query)
+# conn.commit()
 
 # COMMAND ----------
 
@@ -123,7 +135,6 @@ curr_q
 
 @udf(returnType=StringType())
 def process_block_affiliation_change(block):
-    print("test")
     conn_part = connect_to_db()
 
     cur_part = conn_part.cursor()
@@ -133,11 +144,10 @@ def process_block_affiliation_change(block):
 
     cur_part.close()
     conn_part.close()
-    return "Good"
 
 def process_row_affiliation_change(connection, curs_update, paper_id, author_sequence_number, author_id):
     val = (author_id, paper_id, int(author_sequence_number))
-    sql_string = """UPDATE mid.affiliation SET author_id = %s WHERE paper_id = %s AND author_sequence_number = %s"""
+    sql_string = """UPDATE mid.affiliation SET author_id = %s,  updated_date = now() WHERE paper_id = %s AND author_sequence_number = %s"""
 
     try:
         curs_update.execute(sql_string, val)
@@ -151,6 +161,7 @@ def process_row_affiliation_change(connection, curs_update, paper_id, author_seq
 authors_modified = spark.read.parquet(f"{prod_save_path}/current_authors_modified_table") \
     .select(F.split(F.col('work_author_id'), '_').alias('work_author_id'), 'author_id','display_name','alternate_names','orcid',
             'author_id_changed','created_date','modified_date') \
+    .filter(F.size(F.col('work_author_id')) == 2) \
     .select(F.col('work_author_id').getItem(0).cast(LongType()).alias('paper_id'), 
             F.col('work_author_id').getItem(1).cast(IntegerType()).alias('author_sequence_number'),
             'author_id','display_name','alternate_names','orcid',
@@ -180,6 +191,12 @@ authors_changed.cache().count()
 # COMMAND ----------
 
 _ = restart_dynos(heroku_secret['heroku_token'], dynos_to_shutdown, curr_q)
+
+# COMMAND ----------
+
+fast_dynos_to_shutdown = ['fast_store_works_authors_changed']
+fast_curr_q = shutdown_dynos(heroku_secret['heroku_token'], fast_dynos_to_shutdown)
+fast_curr_q
 
 # COMMAND ----------
 
@@ -323,7 +340,6 @@ def process_block_author_merge(block):
 
     cur_part.close()
     conn_part.close()
-    return "Good"
 
 def process_row_author_merge(connection, curs_update, old_author_id, new_author_id):
     val = (new_author_id, old_author_id)
@@ -358,7 +374,17 @@ authors_merged.cache().count()
 
 # COMMAND ----------
 
-_ = restart_dynos(heroku_secret['heroku_token'], dynos_to_shutdown, curr_q)
+merge_author_query = f"""
+UPDATE mid.author ma
+SET merge_into_id = a.merge_to_id,
+    merge_into_date = now(),
+    updated_date = now()
+FROM authorships.author_id_merges a
+WHERE ma.author_id = a.merge_from_id
+AND ma.merge_into_id is null;"""
+
+cur.execute(merge_author_query)
+conn.commit()
 
 # COMMAND ----------
 
@@ -367,7 +393,7 @@ update mid.author
 set merge_into_id = 5317838346,
 merge_into_date = now(),
 updated_date = now()
-where author.author_id in (select author_id from authorships.authors_to_delete);"""
+where author.author_id in (select author_id from authorships.authors_to_delete) and author.merge_into_id is null;"""
 
 cur.execute(delete_author_query)
 conn.commit()
@@ -379,4 +405,8 @@ conn.close()
 
 # COMMAND ----------
 
+_ = restart_dynos(heroku_secret['heroku_token'], dynos_to_shutdown, curr_q)
 
+# COMMAND ----------
+
+_ = restart_dynos(heroku_secret['heroku_token'], fast_dynos_to_shutdown, fast_curr_q)

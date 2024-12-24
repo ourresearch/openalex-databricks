@@ -105,7 +105,7 @@ total_count
 
 # COMMAND ----------
 
-sample_size_for_each_stage = 150000 # this is the sample size for each round of AND
+sample_size_for_each_stage = 600000 # this is the sample size for each round of AND
 sample_per = sample_size_for_each_stage/total_count
 
 # 425,000 rows per run, 2 hr 15 min, r5d.4xlarge (driver), r5d.12xlarge (executor) (x10)
@@ -1240,6 +1240,7 @@ def get_data_features_scored(df, prefix):
     w2 = Window.partitionBy('work_author_id').orderBy(F.col('total_per').desc())
 
     df \
+        .withColumn('paper_id', F.col('paper_id').cast(LongType())) \
         .withColumn('row_label', F.concat_ws("|", F.col('work_author_id'), F.col('work_author_id_2'))) \
         .withColumn('work_in_citations_2', F.array_contains(F.col('citations_2'), F.col('paper_id')).cast(IntegerType())) \
         .withColumn('work_2_in_citations', F.array_contains(F.col('citations'), F.col('paper_id_2')).cast(IntegerType())) \
@@ -1769,6 +1770,7 @@ old_author_id_counts.join(new_author_id_counts, on='author_id', how='leftanti')\
 (old_author_id_counts.join(new_author_id_counts, on='author_id', how='leftanti')
     .select('author_id')
     .union(mid_author_table.join(new_author_id_counts, how='leftanti', on='author_id').select('author_id'))
+    .filter(~F.col('author_id').isin([9999999999, 5317838346]))
     .dropDuplicates()
     .repartition(6)
     .write.format("jdbc") 
@@ -1946,7 +1948,7 @@ print("Done getting stats")
 
 # if features.count() == len(ids_to_change):
 #     (features.select('work_author_id','new_author_id','request_type','request_date') \
-#        .withColumn("partition_col", (F.random()*40+1).cast(IntegerType()))
+#        .withColumn("partition_col", (F.rand()*40+1).cast(IntegerType()))
 #        .write.format("jdbc") 
 #        .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
 #        .option("dbtable", 'authorships.add_works') 
@@ -1964,7 +1966,7 @@ print("Done getting stats")
 
 # COMMAND ----------
 
-# ids_to_change = ['2401262275_1','2520840057_1']
+# ids_to_change = ['2031278299_5', '4387151906_3', '1976519379_1', '4300191113_3', '2605522527_3', '2797023940_1', '2098556928_2', '2807679418_2', '2792772187_3', '2054484325_3', '2014746815_3', '2028459115_4', '2053156463_7', '1970378065_3', '2094547765_6', '2042307558_3', '2321342090_9', '4384525591_6', '2953338327_4', '2057314539_3', '1984817035_6', '2023349773_6', '2027572529_3', '4387450863_2', '2006958206_2', '2043912917_2', '2564608042_3', '3103684480_3', '1056368457_4', '3041935151_2', '2062505842_2', '4387738205_3', '1975135073_5', '2025913063_7', '2955589198_5', '2002342675_5', '1544258620_3', '2073401403_1', '4238270647_7', '2071095312_3', '2320026348_3', '4297796787_7', '2312654982_3', '1970290378_1', '2036860328_2', '3012414416_8', '1996176542_8', '4242299694_6', '4386504076_3', '2061343856_3', '2078303575_3', '2326414568_3', '2057779250_5', '4220836250_2', '2055235703_9', '2127358644_2', '2014897716_6', '1963840591_6', '2417903834_6', '4310362883_1', '2046902792_4', '1985578967_4', '2045924774_1', '948149728_6', '1974691413_4', '2064631413_2', '2486048711_2', '2781956704_5', '2029402002_6', '4206981297_3', '2062022959_2', '2971637030_10', '2038494101_8', '1555848143_7', '2145071120_6', '1764181257_5', '2095231047_6', '2034588057_3', '1991844428_3', '1971611093_4', '2006774002_3', '4320930981_2', '2779172875_1', '3127631705_5', '2042996519_1', '4382343761_9', '4310363084_6', '3118610170_5', '2023089263_3', '2018898654_1', '1560888424_7', '2036052041_7', '2035318795_3', '2052348303_3', '1548129990_1', '2032746885_7', '3093557211_8', '12141033_5', '2085626713_2', '2144782188_5', '2004700150_2', '1996668500_3', '1977622699_3', '3180969892_1', '2016535359_1', '4327726455_3', '2015560851_4', '1966276616_5', '1975748819_2', '2083555138_2', '2104352698_7', '1988234522_2', '2481880151_3', '2794518685_8', '2043001825_3', '2951716789_2', '2417877924_2', '2064630663_1', '2326636037_1', '3176137101_2', '1917322496_9', '2013302092_10', '1995284717_2', '2142193843_2', '2328525092_3', '2510784946_3', '2020533006_1', '4302773392_6', '2044254998_2', '1973668956_1', '3161505316_5', '2161649556_8', '4256326086_1', '2323250119_1', '2074914143_6', '2045126735_1', '4243475135_5', '2573771477_1', '2082973985_3', '2072442362_3', '2366311632_5', '2135678766_3', '2563456577_1', '2014846150_3']
 
 
 # features = spark.read.parquet(f"{temp_save_path}/current_features_table/") \
@@ -1981,7 +1983,7 @@ print("Done getting stats")
 # print(features.cache().count())
 
 # (features.select('work_author_id_for_cluster','all_works_to_cluster','request_type','request_date') \
-#    .withColumn("partition_col", (F.random()*40+1).cast(IntegerType()))
+#    .withColumn("partition_col", (F.rand()*40+1).cast(IntegerType()))
 #    .write.format("jdbc") 
 #    .option("url", f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}") 
 #    .option("dbtable", 'authorships.overmerged_authors') 
@@ -2003,11 +2005,10 @@ if spark.read.parquet(f"{temp_save_path}/final_data_to_disambiguate/").count() =
     pass
 else:
     ########################################### INITIAL DATA PREP #####################################################
-
-    # Read add_works table
+    # Read change_author_display_name table
     df = (spark.read
         .format("postgresql")
-        .option("dbtable", "authorships.add_works")
+        .option("dbtable", "authorships.change_author_display_name")
         .option("host", secret['host'])
         .option("port", secret['port'])
         .option("database", secret['dbname'])
@@ -2018,7 +2019,59 @@ else:
     )
 
     df.write.mode('overwrite') \
+        .parquet(f"{temp_save_path}/current_change_author_display_name_table/")
+
+    frozen_authors = (spark.read
+        .format("postgresql")
+        .option("dbtable", "authorships.author_freeze")
+        .option("host", secret['host'])
+        .option("port", secret['port'])
+        .option("database", secret['dbname'])
+        .option("user", secret['username'])
+        .option("password", secret['password'])
+        .option("partitionColumn", "partition_col")
+        .option("lowerBound", 1)
+        .option("upperBound", 40)
+        .option("numPartitions", 20)
+        .load())
+
+    frozen_authors.select('author_id').dropDuplicates().cache().count()
+
+    # Read add_works table
+    df = (spark.read
+        .format("postgresql")
+        .option("dbtable", "authorships.add_works")
+        .option("host", secret['host'])
+        .option("port", secret['port'])
+        .option("database", secret['dbname'])
+        .option("user", secret['username'])
+        .option("password", secret['password'])
+        .option("partitionColumn", "partition_col")
+        .option("lowerBound", 1)
+        .option("upperBound", 40)
+        .option("numPartitions", 20)
+        .load()
+    )
+
+    df.write.mode('overwrite') \
         .parquet(f"{temp_save_path}/current_add_works_table/")
+
+
+    # Read remove works table
+    df = (spark.read
+        .format("postgresql")
+        .option("dbtable", "authorships.remove_works")
+        .option("host", secret['host'])
+        .option("port", secret['port'])
+        .option("database", secret['dbname'])
+        .option("user", secret['username'])
+        .option("password", secret['password'])
+        .option("fetchSize", "15")
+        .load()
+    )
+
+    df.write.mode('overwrite') \
+        .parquet(f"{temp_save_path}/current_remove_works_table/")
 
     # Read author_id_merges table
     df = (spark.read
@@ -2080,8 +2133,20 @@ else:
         .dropDuplicates(subset=['merge_from_id'])
     print(f"{datetime.datetime.now().strftime('%H:%M')}: Rows in author_ids_merges table: {merge_authors_df.cache().count()}")
 
+    # check for frozen author IDs in the merge_from_id column
+    merge_authors_df_temp = merge_authors_df.alias('a').join(frozen_authors.select(F.col('author_id').alias('merge_from_id')), how='inner', on='merge_from_id')
+    merge_authors_df_leftover = merge_authors_df.alias('b').join(frozen_authors.select(F.col('author_id').alias('merge_from_id')), how='leftanti', on='merge_from_id')
+
+    if merge_authors_df_temp.count() > 0:
+        print(f"{datetime.datetime.now().strftime('%H:%M')}: Found frozen author IDs in merge_from_id column. Updating merge_from_id column to be merge_to_id")
+        merge_authors_df = merge_authors_df_temp.select(F.col('merge_from_id').alias('new_merge_to_id'), F.col('merge_to_id').alias('new_merge_from_id')) \
+            .select(F.col('new_merge_to_id').alias('merge_to_id'), F.col('new_merge_from_id').alias('merge_from_id')) \
+            .union(merge_authors_df_leftover.select('merge_from_id', 'merge_to_id'))
+
+    # Filter by request_date greater than 11/5/2024 because old curations may be pointing work to the wrong author ID
     w5 = Window.partitionBy('work_author_id').orderBy(F.col('request_date').desc())
     add_works_df = spark.read.parquet(f"{temp_save_path}/current_add_works_table/") \
+        .filter(F.col('request_date') > '2024-11-05') \
         .withColumn('request_rank', F.row_number().over(w5)) \
         .filter(F.col('request_rank') == 1) \
         .select('work_author_id', F.col('new_author_id').alias('author_id')) \
@@ -2091,12 +2156,38 @@ else:
                                               F.col('author_id')).otherwise(F.col('merge_to_id'))) \
         .select('work_author_id', F.col('final_author_id').alias('author_id')) \
         .dropDuplicates(subset=['work_author_id'])
+
+    w6 = Window.partitionBy('author_id').orderBy(F.col('request_date').desc())
+    change_author_display_name_df = spark.read.parquet(f"{temp_save_path}/current_change_author_display_name_table/") \
+        .withColumn('request_rank', F.row_number().over(w6)) \
+        .filter(F.col('request_rank') == 1) \
+        .select('author_id', F.col('new_display_name'))
     
     print(f"{datetime.datetime.now().strftime('%H:%M')}: Rows in add_works table: {add_works_df.cache().count()}")
 
+    
+    work_to_clusters_removed = spark.read.parquet(f"{temp_save_path}/current_remove_works_table/") \
+        .select(F.col('paper_id').cast(LongType()), F.col('author_id').cast(LongType()))
+
+    print(f"{datetime.datetime.now().strftime('%H:%M')}: Rows in remove clusters table: {work_to_clusters_removed.cache().count()}")
+
+    # getting frozen author IDs and the associated work_author_ids (so that they cannot go through AND again)
+    locked_work_authors_df = spark.read.parquet(f"{temp_save_path}/current_authors_table/")\
+        .select('work_author_id','author_id') \
+        .join(frozen_authors.select('author_id'), how='inner', on='author_id') \
+        .select('work_author_id').dropDuplicates()
+
+    all_new_data_removed_only = spark.read.parquet(f"{temp_save_path}/final_data_to_disambiguate/") \
+        .dropDuplicates(subset=['work_author_id']) \
+        .join(work_to_clusters_removed.select('paper_id').dropDuplicates(), how='inner', on='paper_id')
+
     all_new_data = spark.read.parquet(f"{temp_save_path}/final_data_to_disambiguate/") \
         .dropDuplicates(subset=['work_author_id']) \
-        .join(add_works_df, how='leftanti', on='work_author_id')
+        .join(add_works_df, how='leftanti', on='work_author_id') \
+        .join(locked_work_authors_df, how='leftanti', on='work_author_id')
+
+    if all_new_data_removed_only.count() > 0:
+        all_new_data = all_new_data.alias('and').union(all_new_data_removed_only.select(*all_new_data.columns))
     new_data_size = all_new_data.count()
 
     print(f"{datetime.datetime.now().strftime('%H:%M')}: {new_data_size} NEW ROWS TO DISAMBIGUATE")
@@ -2117,6 +2208,7 @@ else:
         .withColumn('final_author_id', F.when(F.col('merge_to_id').isNull(), 
                                               F.col('author_id')).otherwise(F.col('merge_to_id'))) \
         .select('work_author_id', F.col('final_author_id').alias('author_id')) \
+    .filter(~F.col('author_id').isin([9999999999, 5317838346]))
 
     print(f"{datetime.datetime.now().strftime('%H:%M')}: Init cluster table created")
 
@@ -2146,7 +2238,7 @@ else:
         .withColumn('final_raw_author_name', F.when(F.col('new_raw_author_name').isNull(), 
                                                 F.col('author_2')).otherwise(F.col('new_raw_author_name'))) \
         .select('work_author_id_2','orcid_2','citations_2','institutions_2',F.col('final_raw_author_name').alias('author_2'),
-                'paper_id_2','original_author','concepts_shorter_2','coauthors_shorter_2') \
+                F.col('paper_id_2').cast(LongType()),'original_author','concepts_shorter_2','coauthors_shorter_2') \
         .write.mode('overwrite') \
         .parquet(f"{temp_save_path}/temp_features_table/init/")
 
@@ -2206,14 +2298,6 @@ else:
         print(f"{datetime.datetime.now().strftime('%H:%M')}: Authors have been previously disambiguated: {works_authors_to_remove.count()}")
         name_of_stats_to_track.append('previously_disambiguated_count')
         stats_to_track.append(works_authors_to_remove.count())
-
-        # temp_features_table \
-        #     .join(works_authors_to_remove.select(F.col('work_author_id').alias('work_author_id_2')), 
-        #         how='leftanti', on='work_author_id_2') \
-        #     .write.mode('overwrite') \
-        #     .parquet(f"{temp_save_path}/temp_features_table/init_2/")
-
-        # temp_features_table = spark.read.parquet(f"{temp_save_path}/temp_features_table/init_2/")
 
         temp_authors_table \
             .join(works_authors_to_remove.select(F.col('work_author_id').alias('work_author_id_2')), 
@@ -2285,7 +2369,7 @@ else:
     elif overmerged_clusters.count() > 0:
         print(f"{datetime.datetime.now().strftime('%H:%M')}: Overmerge clusters to fix: {overmerged_clusters.count()}")
 
-        new_max_id = int(temp_authors_table.select(F.max(F.col('author_id'))).collect()[0][0])
+        new_max_id = int(temp_authors_table.filter(F.col("author_id")<9999999999).select(F.max(F.col('author_id'))).collect()[0][0])
         
         w2 = Window.orderBy(F.col('work_author_id'))
 
@@ -2322,36 +2406,41 @@ else:
         print(f"{datetime.datetime.now().strftime('%H:%M')}: {orcid_multiple.count()} ORCIDs found with multiple profiles")
 
         # sort by works count (desc) and then by author ID to get final author ID for that ORCID
-        w_mul_orc = Window.partitionBy('orcid_2').orderBy(F.col('count').desc(), F.col('author_id'))
+        w_mul_orc = Window.partitionBy('orcid_2').orderBy(F.col('id_to_use').desc(), F.col('count').desc(), F.col('author_id'))
+        
         author_ids_to_use = temp_authors_table.alias('orcid_to_use').join(orcid_multiple.select('orcid_2'), on='orcid_2', how='inner')\
             .groupBy(['orcid_2','author_id']).count() \
+            .join(frozen_authors.alias('frozen_orcid').withColumn('id_to_use', F.lit(1)), how='left', on='author_id') \
+            .fillna(0, subset=['id_to_use']) \
             .withColumn('rank', F.row_number().over(w_mul_orc)) \
             .filter(F.col('rank') == 1)
 
+        ############ OLD CODE: used for smartly joining together clusters with conflicting names ###############
+
         # for each ORCID, get all work_author_ids, groupby ones that have ORCID attached and for the remainder, run a modified leftovers function 
         # where it tries to match on name only
-        temp_authors_table_orcid = temp_authors_table.alias('new_orcid_clusters').join(author_ids_to_use.select('orcid_2',F.col('author_id').alias('new_author_id')), 
-                                                                                        on='orcid_2', how='inner') \
-            .withColumn('final_author_id', F.when(F.col('new_author_id').isNotNull(), F.col('new_author_id')).otherwise(F.col('author_id'))) \
-            .select('work_author_id_2', 'final_author_id')
+        # temp_authors_table_orcid = temp_authors_table.alias('new_orcid_clusters').join(author_ids_to_use.select('orcid_2',F.col('author_id').alias('new_author_id')), 
+        #                                                                                 on='orcid_2', how='inner') \
+        #     .withColumn('final_author_id', F.when(F.col('new_author_id').isNotNull(), F.col('new_author_id')).otherwise(F.col('author_id'))) \
+        #     .select('work_author_id_2', 'final_author_id')
 
-        rows_to_remove = temp_authors_table_orcid.join(temp_features_table, how='inner', on='work_author_id_2') \
-            .select(F.col('final_author_id').alias('author_id'), F.array([F.col('work_author_id_2'), F.col('orcid_2'), F.col('author_2')]).alias('works')) \
-            .groupBy('author_id').agg(F.collect_list(F.col('works')).alias('works_to_check')) \
-            .withColumn('work_author_to_group_mapping', go_through_names_to_take_out_mismatches(F.col('works_to_check'))) \
-            .select('author_id',F.explode('work_author_to_group_mapping').alias('work_author_to_group_mapping')) \
-            .select('author_id', 
-                    F.col('work_author_to_group_mapping').getItem(0).getItem(0).alias('group_cluster_id'), 
-                    F.col('work_author_to_group_mapping').getItem(1).alias('work_author_id_left')) \
-            .select('author_id', 'group_cluster_id', F.col('work_author_id_left').alias('work_author_ids')) \
-            .filter(F.col('group_cluster_id').isNotNull())
+        # rows_to_remove = temp_authors_table_orcid.join(temp_features_table, how='inner', on='work_author_id_2') \
+        #     .select(F.col('final_author_id').alias('author_id'), F.array([F.col('work_author_id_2'), F.col('orcid_2'), F.col('author_2')]).alias('works')) \
+        #     .groupBy('author_id').agg(F.collect_list(F.col('works')).alias('works_to_check')) \
+        #     .withColumn('work_author_to_group_mapping', go_through_names_to_take_out_mismatches(F.col('works_to_check'))) \
+        #     .select('author_id',F.explode('work_author_to_group_mapping').alias('work_author_to_group_mapping')) \
+        #     .select('author_id', 
+        #             F.col('work_author_to_group_mapping').getItem(0).getItem(0).alias('group_cluster_id'), 
+        #             F.col('work_author_to_group_mapping').getItem(1).alias('work_author_id_left')) \
+        #     .select('author_id', 'group_cluster_id', F.col('work_author_id_left').alias('work_author_ids')) \
+        #     .filter(F.col('group_cluster_id').isNotNull())
 
-        rows_to_remove.cache().count()
+        # rows_to_remove.cache().count()
 
         # writing out rows for testing
-        rows_to_remove \
-            .write.mode('overwrite') \
-            .parquet(f"{temp_save_path}/testing_new_code/rows_to_remove_from_cluster_for_name_mismatch/")
+        # rows_to_remove \
+        #     .write.mode('overwrite') \
+        #     .parquet(f"{temp_save_path}/testing_new_code/rows_to_remove_from_cluster_for_name_mismatch/")
 
         # write mid.author changes
         temp_authors_table.join(author_ids_to_use.select('orcid_2',F.col('author_id').alias('new_author_id')), how='inner', on='orcid_2') \
@@ -2361,33 +2450,48 @@ else:
             .write.mode('overwrite')\
             .parquet(f"{prod_save_path}/author_merges_to_combine_orcid/")
 
-        new_max_id = int(temp_authors_table.select(F.max(F.col('author_id'))).collect()[0][0])
+        
+        ############ OLD CODE: used for smartly joining together clusters with conflicting names ###############
+
+        # new_max_id = int(temp_authors_table.select(F.max(F.col('author_id'))).collect()[0][0])
             
-        w2 = Window.orderBy(F.col('group_cluster_id'))
+        # w2 = Window.orderBy(F.col('group_cluster_id'))
 
-        # Getting work_author_ids that will be in new cluster
-        ids_to_skip = rows_to_remove.select(F.explode('work_author_ids').alias('work_author_id_2'))
+        # # Getting work_author_ids that will be in new cluster
+        # ids_to_skip = rows_to_remove.select(F.explode('work_author_ids').alias('work_author_id_2'))
 
-        # Getting the new cluster number
-        rows_to_remove.select('group_cluster_id','work_author_ids')\
-            .withColumn('temp_cluster_num', F.row_number().over(w2)) \
-            .withColumn('author_id', F.lit(new_max_id) + F.col('temp_cluster_num')) \
-            .select(F.explode('work_author_ids').alias('work_author_id'), 'author_id') \
-            .write.mode('overwrite') \
-            .parquet(f"{temp_save_path}/new_rows_for_author_table/leftovers_from_merging_orcid_author_clusters/")
+        # # Getting the new cluster number
+        # rows_to_remove.select('group_cluster_id','work_author_ids')\
+        #     .withColumn('temp_cluster_num', F.row_number().over(w2)) \
+        #     .withColumn('author_id', F.lit(new_max_id) + F.col('temp_cluster_num')) \
+        #     .select(F.explode('work_author_ids').alias('work_author_id'), 'author_id') \
+        #     .write.mode('overwrite') \
+        #     .parquet(f"{temp_save_path}/new_rows_for_author_table/leftovers_from_merging_orcid_author_clusters/")
+
+        # # Filtering out changed work_author_ids from temp_authors_table
+        # temp_authors_table = temp_authors_table.alias('new_temp_authors_overmerge_clusters').join(ids_to_skip, how='leftanti', on='work_author_id_2') \
+        #     .join(author_ids_to_use.select('orcid_2',F.col('author_id').alias('new_author_id')), on='orcid_2', how='left') \
+        #     .withColumn('final_author_id', F.when(F.col('new_author_id').isNotNull(), F.col('new_author_id')).otherwise(F.col('author_id'))) \
+        #     .select('work_author_id_2', F.col('final_author_id').alias('author_id'))
 
         # Filtering out changed work_author_ids from temp_authors_table
-        temp_authors_table = temp_authors_table.alias('new_temp_authors_overmerge_clusters').join(ids_to_skip, how='leftanti', on='work_author_id_2') \
+        temp_authors_table = temp_authors_table.alias('new_temp_authors_overmerge_clusters') \
             .join(author_ids_to_use.select('orcid_2',F.col('author_id').alias('new_author_id')), on='orcid_2', how='left') \
             .withColumn('final_author_id', F.when(F.col('new_author_id').isNotNull(), F.col('new_author_id')).otherwise(F.col('author_id'))) \
-            .select('work_author_id_2', F.col('final_author_id').alias('author_id'))
+            .select('work_author_id_2', 
+                F.col('final_author_id').alias('author_id'),
+                'orcid_2', 
+                'display_name',
+                'alternate_names',
+                'author_alternate_names',
+                'name_match_list')
 
-        # Making all tables current
-        new_loc = 'leftovers_from_merging_orcid_author_clusters'
+        # # Making all tables current
+        # new_loc = 'leftovers_from_merging_orcid_author_clusters'
 
-        _ = create_new_author_table(new_loc)
-        print(f"{datetime.datetime.now().strftime('%H:%M')}: New authors table created")
-        temp_authors_table = spark.read.parquet(f"{temp_save_path}/temp_authors_table/{new_loc}/")
+        # _ = create_new_author_table(new_loc)
+        # print(f"{datetime.datetime.now().strftime('%H:%M')}: New authors table created")
+        # temp_authors_table = spark.read.parquet(f"{temp_save_path}/temp_authors_table/{new_loc}/")
 
     ########################################### ORCID MATCH #####################################################
 
@@ -2424,48 +2528,6 @@ else:
             'institutions','citations','created_date') \
         .write.mode('overwrite') \
         .parquet(f"{temp_save_path}/round_2_of_clustering/")
-
-    # Removing connections to clusters for user input
-    try:
-        work_to_clusters_removed = spark.read.parquet(f"{prod_save_path}/works_removed_from_clusters/")
-    except:
-        work_to_clusters_removed = spark.sparkContext.emptyRDD()\
-            .toDF(schema=StructType([StructField("work_author_id", StringType()),
-                                     StructField("author_id", LongType())]))
-            
-    # if overmerged_clusters.count() == 0:
-    #     print(f"{datetime.datetime.now().strftime('%H:%M')}: No overmerges to fix!")
-    # elif overmerged_clusters.count() > 0:
-    #     print(f"{datetime.datetime.now().strftime('%H:%M')}: Overmerge clusters to fix: {overmerged_clusters.count()}")
-
-    #     if spark.read.parquet(f"{temp_save_path}/new_rows_for_author_table/new_author_clusters/").count() > 0:
-    #         new_max_id = int(spark.read.parquet(f"{temp_save_path}/new_rows_for_author_table/new_author_clusters/")
-    #                         .select(F.max(F.col('author_id'))).collect()[0][0])
-    #     else:
-    #         new_max_id = int(temp_authors_table.select(F.max(F.col('author_id'))).collect()[0][0])
-        
-    #     w2 = Window.orderBy(F.col('work_author_id'))
-
-    #     # Getting work_author_ids that will be in new cluster
-    #     ids_to_skip = overmerged_clusters.select(F.explode('work_author_ids').alias('work_author_id_2'))
-
-    #     # Getting the new cluster number
-    #     overmerged_clusters.select('work_author_id','work_author_ids')\
-    #         .withColumn('temp_cluster_num', F.row_number().over(w2)) \
-    #         .withColumn('author_id', F.lit(new_max_id) + F.col('temp_cluster_num')) \
-    #         .select(F.explode('work_author_ids').alias('work_author_id'), 'author_id') \
-    #         .write.mode('append') \
-    #         .parquet(f"{temp_save_path}/new_rows_for_author_table/overmerged_authors/")
-
-    #     # Filtering out changed work_author_ids from temp_authors_table
-    #     temp_authors_table = temp_authors_table.join(ids_to_skip, how='leftanti', on='work_author_id_2').alias('new_temp_authors_new_clusters')
-
-    #     # Making all tables current
-    #     new_loc = 'overmerged_author_clusters'
-
-    #     _ = create_new_author_table(new_loc)
-    #     print(f"{datetime.datetime.now().strftime('%H:%M')}: New authors table created")
-    #     temp_authors_table = spark.read.parquet(f"{temp_save_path}/temp_authors_table/{new_loc}/")
             
     ####################################### NAME MATCH ROUND 1 ################################################
             
@@ -2478,7 +2540,7 @@ else:
                                         'author_id',
                                         F.explode(F.col('alternate_names')).alias('author')),
             how='inner', on='author') \
-        .join(work_to_clusters_removed, how='leftanti', on=['work_author_id','author_id']) \
+        .join(work_to_clusters_removed, how='leftanti', on=['paper_id','author_id']) \
         .filter((F.col('orcid')==F.col('orcid_2')) | 
                 (F.col('orcid')=='') | 
                 (F.col('orcid_2')=='')) \
@@ -2535,7 +2597,7 @@ else:
                                         'author_id',
                                         F.explode(F.col('alternate_names')).alias('author')),
             how='inner', on='author') \
-        .join(work_to_clusters_removed, how='leftanti', on=['work_author_id','author_id']) \
+        .join(work_to_clusters_removed, how='leftanti', on=['paper_id','author_id']) \
         .filter((F.col('orcid')==F.col('orcid_2')) | 
                 (F.col('orcid')=='') | 
                 (F.col('orcid_2')=='')) \
@@ -2615,6 +2677,7 @@ else:
         .dropDuplicates() \
         .join(temp_authors_table.select('work_author_id_2','author_id'), how='left', on='work_author_id_2') \
         .join(round_4_new_data, how='inner', on='work_author_id') \
+        .join(work_to_clusters_removed, how='leftanti', on=['paper_id','author_id']) \
         .join(temp_features_table, how='inner', on='work_author_id_2') \
         .filter((F.col('orcid')==F.col('orcid_2')) | 
             (F.col('orcid')=='') | 
@@ -2668,7 +2731,7 @@ else:
     stats_to_track.append(new_cluster_count)
 
     # Getting max author_id to create new cluster nums
-    max_id = int(temp_authors_table.select(F.max(F.col('author_id'))).collect()[0][0])
+    max_id = int(temp_authors_table.filter(F.col("author_id")<9999999999).select(F.max(F.col('author_id'))).collect()[0][0])
 
     # Create new clusters
     w1 = Window.orderBy(F.col('work_author_id'))
@@ -2860,7 +2923,15 @@ else:
                 F.col('alternate_names').alias('alternate_names_1'), 
                 F.col('orcid').alias('orcid_1'),
                 'created_date',
-                'modified_date')
+                'modified_date') \
+        .join(final_new_data.select(F.col('work_author_id')), how='leftanti', on='work_author_id')
+
+    # getting all null author data (except data that was just disambiguated)
+    null_authors_not_disambiguated = spark.read.parquet(f"{temp_save_path}/current_authors_table/") \
+        .filter(F.col('author_id').isin([9999999999, 5317838346])) \
+        .join(all_new_data.select('work_author_id'), how='leftanti', on='work_author_id') \
+        .select('work_author_id', F.col('author_id').alias('author_id_2'), F.col('display_name').alias('display_name_2'), 
+                F.col('alternate_names').alias('alternate_names_2'), F.col('orcid').alias('orcid_2'))
 
     final_author_table = temp_authors_table \
             .select(F.col('work_author_id_2').alias('work_author_id'), 
@@ -2868,6 +2939,7 @@ else:
                 F.col('display_name').alias('display_name_2'),
                 F.col('author_alternate_names').alias('alternate_names_2'), 
                 'orcid_2') \
+            .union(null_authors_not_disambiguated) \
             .join(final_author_ids_new_clusters.select(F.col('work_author_id_2').alias('work_author_id'), 'final_author_id'), 
                   how='left', on='work_author_id') \
             .withColumn('final_author_id', F.when(F.col('final_author_id').isNotNull(), F.col('final_author_id')).otherwise(F.col('author_id_2'))) \
@@ -2879,7 +2951,15 @@ else:
                     F.col('final_author_id').alias('author_id_2'),
                     'display_name_2',
                     'alternate_names_2', 
-                    F.col('final_orcid_id').alias('orcid_2'))
+                    F.col('final_orcid_id').alias('orcid_2')) \
+            .join(change_author_display_name_df.select(F.col('author_id').alias('author_id_2'), 'new_display_name'), 
+                how='left', on='author_id_2') \
+            .withColumn('final_display_name', F.when(F.col('new_display_name').isNull(), F.col('display_name_2')).otherwise(F.col('new_display_name'))) \
+            .select('work_author_id', 
+                    F.col('author_id_2'),
+                    F.col('final_display_name').alias('display_name_2'),
+                    'alternate_names_2', 
+                    F.col('orcid_2'))
             
     print(f"{datetime.datetime.now().strftime('%H:%M')}: INITIAL TABLE: {init_author_table.count()}")
     print(f"{datetime.datetime.now().strftime('%H:%M')}: FINAL TABLE: {final_author_table.count()}")
@@ -3195,6 +3275,17 @@ else:
         .option("truncate", True)
         .mode("overwrite") 
         .save())
+    
+    (spark.read.parquet(f"{temp_save_path}/final_author_table_part/*").select('work_author_id', 'orcid').filter(F.col('orcid')!='')
+        .join(combined_source_orcid.select(F.col('work_author_id_2').alias('work_author_id'), 'orcid_source'), 
+              on='work_author_id', how='left')
+        .select(F.split(F.col('work_author_id'), '_').alias('work_author_id'), 'orcid','orcid_source')
+        .select(F.col('work_author_id').getItem(0).cast(LongType()).alias('paper_id'), 
+                F.col('work_author_id').getItem(1).cast(IntegerType()).alias('author_sequence_number'), 'orcid', 'orcid_source')
+        .withColumn('evidence', F.when(F.col('orcid_source').isNotNull(), F.col('orcid_source')).otherwise(F.lit('author_disambiguation')))
+        .select('paper_id','author_sequence_number', F.col('orcid'), 'evidence')
+        .write.mode('overwrite')
+        .parquet(f"{database_copy_save_path}/orcid/final_orcid"))
     
     # Future code to write out author IDs and associated ORCID
     # (spark.read.parquet(f"{temp_save_path}/final_author_table_part/*")

@@ -85,12 +85,15 @@ if len(work_id_predicates) == 125:
 print(len(final_predicates))
 
 testing_new_predicates = final_predicates[:-1].copy()
-testing_new_predicates.append(f'paper_id >= {work_id_predicates[-3]} and paper_id < 4395018129')
-testing_new_predicates.append('paper_id >= 4395018129 and paper_id < 4395318129')
-testing_new_predicates.append('paper_id >= 4395318129 and paper_id < 4395718129')
-testing_new_predicates.append('paper_id >= 4395718129 and paper_id < 4396018129')
-testing_new_predicates.append('paper_id >= 4396018129 and paper_id < 4396118129')
-testing_new_predicates.append('paper_id >= 4396118129')
+testing_new_predicates.append(f'paper_id >= {work_id_predicates[-3]} and paper_id < {work_id_predicates[-2]}')
+testing_new_predicates.append(f'paper_id >= {work_id_predicates[-2]} and paper_id < {work_id_predicates[-1]}')
+testing_new_predicates.append(f'paper_id >= {work_id_predicates[-1]}')
+# testing_new_predicates.append(f'paper_id >= {work_id_predicates[-3]} and paper_id < 4395018129')
+# testing_new_predicates.append('paper_id >= 4395018129 and paper_id < 4395318129')
+# testing_new_predicates.append('paper_id >= 4395318129 and paper_id < 4395718129')
+# testing_new_predicates.append('paper_id >= 4395718129 and paper_id < 4396018129')
+# testing_new_predicates.append('paper_id >= 4396018129 and paper_id < 4396118129')
+# testing_new_predicates.append('paper_id >= 4396118129')
 print(len(testing_new_predicates))
 
 # COMMAND ----------
@@ -103,7 +106,7 @@ testing_new_predicates
 df = (spark.read
       .jdbc(
               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
-              table="(select distinct paper_id, original_title, doi_lower, oa_status, journal_id, merge_into_id, publication_date, type, type_crossref, arxiv_id, is_paratext, best_url, best_free_url, created_date from mid.work) new_table", 
+              table="(select distinct paper_id, original_title, doi_lower, oa_status, journal_id, merge_into_id, publication_date, type, type_crossref, arxiv_id, is_paratext, best_url, best_free_url, unpaywall_normalize_title, created_date from mid.work) new_table", 
               properties={"user": secret['username'],
                           "password": secret['password']}, 
               predicates=testing_new_predicates))
@@ -121,7 +124,7 @@ df \
 df = (spark.read
       .jdbc(
               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
-              table="(select distinct paper_id,author_id,affiliation_id,author_sequence_number,original_author,original_orcid,original_affiliation from mid.affiliation) new_table", 
+              table="(select distinct paper_id,author_id,affiliation_id,author_sequence_number,original_author,original_orcid,original_affiliation,is_corresponding_author from mid.affiliation) new_table", 
               properties={"user": secret['username'],
                           "password": secret['password']}, 
               predicates=testing_new_predicates))
@@ -180,7 +183,7 @@ df \
 df = (spark.read
       .jdbc(
               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
-              table="(select distinct paper_id, field_of_study from mid.work_concept where field_of_study not in (17744445,138885662,162324750,144133560,15744967,33923547,71924100,86803240,41008148,127313418,185592680,142362112,144024400,127413603,205649164,95457728,192562407,121332964,39432304) and score > 0.3) as new_table", 
+              table="(select distinct paper_id, field_of_study, score from mid.work_concept where field_of_study not in (17744445,138885662,162324750,144133560,15744967,33923547,71924100,86803240,41008148,127313418,185592680,142362112,144024400,127413603,205649164,95457728,192562407,121332964,39432304) and score > 0.3) as new_table", 
               properties={"user": secret['username'],
                           "password": secret['password']}, 
               predicates=testing_new_predicates))
@@ -190,6 +193,24 @@ df \
         .dropDuplicates()\
         .write.mode('overwrite') \
         .parquet(f"{database_copy_save_path}/mid/work_concept")
+
+# COMMAND ----------
+
+# # mid.work_keyword_concept
+
+# df = (spark.read
+#       .jdbc(
+#               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
+#               table="(select distinct paper_id from mid.work_keyword_concept) as new_table", 
+#               properties={"user": secret['username'],
+#                           "password": secret['password']}, 
+#               predicates=testing_new_predicates))
+
+# df \
+#         .repartition(384)\
+#         .dropDuplicates()\
+#         .write.mode('overwrite') \
+#         .parquet(f"{database_copy_save_path}/mid/work_keyword_concept")
 
 # COMMAND ----------
 

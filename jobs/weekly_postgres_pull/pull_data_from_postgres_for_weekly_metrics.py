@@ -83,12 +83,15 @@ print(len(final_predicates))
 
 testing_new_predicates = final_predicates[:-1].copy()
 testing_new_predicates.append(f'paper_id >= {work_id_predicates[-3]} and paper_id < {work_id_predicates[-2]}')
-testing_new_predicates.append(f'paper_id >= {work_id_predicates[-2]} and paper_id < 4395018129')
-testing_new_predicates.append('paper_id >= 4395018129 and paper_id < 4395318129')
-testing_new_predicates.append('paper_id >= 4395318129 and paper_id < 4395718129')
-testing_new_predicates.append('paper_id >= 4395718129 and paper_id < 4396018129')
-testing_new_predicates.append('paper_id >= 4396018129 and paper_id < 4396118129')
-testing_new_predicates.append('paper_id >= 4396118129')
+testing_new_predicates.append(f'paper_id >= {work_id_predicates[-2]} and paper_id < {work_id_predicates[-1]}')
+testing_new_predicates.append(f'paper_id >= {work_id_predicates[-1]}')
+# testing_new_predicates.append(f'paper_id >= {work_id_predicates[-3]} and paper_id < {work_id_predicates[-2]}')
+# testing_new_predicates.append(f'paper_id >= {work_id_predicates[-2]} and paper_id < 4395018129')
+# testing_new_predicates.append('paper_id >= 4395018129 and paper_id < 4395318129')
+# testing_new_predicates.append('paper_id >= 4395318129 and paper_id < 4395718129')
+# testing_new_predicates.append('paper_id >= 4395718129 and paper_id < 4396018129')
+# testing_new_predicates.append('paper_id >= 4396018129 and paper_id < 4396118129')
+# testing_new_predicates.append('paper_id >= 4396118129')
 print(len(testing_new_predicates))
 
 # COMMAND ----------
@@ -134,7 +137,7 @@ df \
 df = (spark.read
 .format("postgresql")
 .option("dbtable", 
-        f"(select distinct journal_id, display_name, type, merge_into_id from mid.journal) as new_table")
+        f"(select * from mid.journal) as new_table")
 .option("host", secret['host'])
 .option("port", secret['port'])
 .option("database", secret['dbname'])
@@ -144,6 +147,7 @@ df = (spark.read
 
 df \
 .repartition(64) \
+.dropDuplicates() \
 .write.mode('overwrite') \
 .parquet(f"{database_copy_save_path}/mid/journal")
 
@@ -348,18 +352,21 @@ df \
 
 # testing_new_predicates = final_predicates[:-1].copy()
 # testing_new_predicates.append(f'work_id >= {work_id_predicates[-3]} and work_id < {work_id_predicates[-2]}')
-# testing_new_predicates.append(f'work_id >= {work_id_predicates[-2]} and work_id < 4395018129')
-# testing_new_predicates.append('work_id >= 4395018129 and work_id < 4395318129')
-# testing_new_predicates.append('work_id >= 4395318129 and work_id < 4395718129')
-# testing_new_predicates.append('work_id >= 4395718129 and work_id < 4396018129')
-# testing_new_predicates.append('work_id >= 4396018129 and work_id < 4396118129')
-# testing_new_predicates.append('work_id >= 4396118129')
+# testing_new_predicates.append(f'work_id >= {work_id_predicates[-2]} and work_id < {work_id_predicates[-1]}')
+# testing_new_predicates.append(f'work_id >= {work_id_predicates[-1]}')
+# # testing_new_predicates.append(f'work_id >= {work_id_predicates[-3]} and work_id < {work_id_predicates[-2]}')
+# # testing_new_predicates.append(f'work_id >= {work_id_predicates[-2]} and work_id < 4395018129')
+# # testing_new_predicates.append('work_id >= 4395018129 and work_id < 4395318129')
+# # testing_new_predicates.append('work_id >= 4395318129 and work_id < 4395718129')
+# # testing_new_predicates.append('work_id >= 4395718129 and work_id < 4396018129')
+# # testing_new_predicates.append('work_id >= 4396018129 and work_id < 4396118129')
+# # testing_new_predicates.append('work_id >= 4396118129')
 # print(len(testing_new_predicates))
 
 # df = (spark.read
 #       .jdbc(
 #               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
-#               table="(select work_id, record_type, title, journal_id, authors from ins.recordthresher_record) as new_table", 
+#               table="(select work_id, record_type, authors, citations, id, doi from ins.recordthresher_record where record_type = 'mag_location') as new_table", 
 #               properties={"user": secret['username'],
 #                           "password": secret['password']}, 
 #               predicates=testing_new_predicates))
@@ -368,3 +375,18 @@ df \
 # .repartition(256) \
 # .write.mode('overwrite') \
 # .parquet(f"{database_copy_save_path}/ins/recordthresher_record")
+
+# COMMAND ----------
+
+# df = (spark.read
+#       .jdbc(
+#               url=f"jdbc:postgresql://{secret['host']}:{secret['port']}/{secret['dbname']}",
+#               table="(select work_id, authors, citations from ins.mag_authors) as new_table", 
+#               properties={"user": secret['username'],
+#                           "password": secret['password']}, 
+#               predicates=testing_new_predicates))
+
+# df \
+# .repartition(256) \
+# .write.mode('overwrite') \
+# .parquet(f"{database_copy_save_path}/ins/mag_authors")
