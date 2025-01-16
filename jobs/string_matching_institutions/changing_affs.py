@@ -1,5 +1,25 @@
 import re
 
+def chinese_medical_university_affs(aff_string, current_affs, aff_id_1, one_off_affs, affs_to_add, 
+                                    strings_for_affs):
+    
+    all_affs_to_search = [aff_id_1]+one_off_affs+affs_to_add
+    
+    if any(aff_id in current_affs for aff_id in all_affs_to_search):
+        current_affs.append(aff_id_1)
+        for aff_id_check, aff_string_check in zip(affs_to_add, strings_for_affs):
+            if aff_id_check in current_affs:
+                for aff_id_check_2, aff_string_check_2 in zip(affs_to_add, strings_for_affs):
+                    if aff_id_check_2 == aff_id_check:
+                        pass
+                    else:
+                        if aff_string_check_2 in aff_string:
+                            if aff_id_check in current_affs:
+                                current_affs.remove(aff_id_check)
+                            if aff_id_check_2 not in current_affs:
+                                current_affs.append(aff_id_check_2)
+    return current_affs
+
 def matching_based_on_current_affs(current_affs, aff_string):
     if (len(current_affs) > 1) & (-1 in current_affs):
         current_affs.remove(-1)

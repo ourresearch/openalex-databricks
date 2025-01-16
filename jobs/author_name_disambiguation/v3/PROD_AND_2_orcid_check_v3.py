@@ -25,31 +25,30 @@ from pyspark.sql.types import IntegerType, StringType, FloatType, ArrayType, Dou
 
 # COMMAND ----------
 
-def get_secret(secret_name = "prod/psqldb/conn_string"):
+def get_secret(secret_name = "postgres-works"):
 
-    region_name = "us-east-1"
+    if secret_name == "postgres-works":
+        secret = {'username': dbutils.secrets.get(scope = "postgres-works", key = "user"),
+                'password': dbutils.secrets.get(scope = "postgres-works", key = "password"),
+                'host': dbutils.secrets.get(scope = "postgres-works", key = "host"),
+                'dbname': dbutils.secrets.get(scope = "postgres-works", key = "dbname"),
+                'port': dbutils.secrets.get(scope = "postgres-works", key = "port"),
+                'engine': dbutils.secrets.get(scope = "postgres-works", key = "engine")}
+    elif secret_name == "author-disambiguation-buckets":
+        secret = {'and_save_path': dbutils.secrets.get(scope = "author-disambiguation-buckets", key = "and_save_path"),
+                  'database_copy_save_path': dbutils.secrets.get(scope = "author-disambiguation-buckets", key = "database_copy_save_path"),
+                  'temp_save_path': dbutils.secrets.get(scope = "author-disambiguation-buckets", key = "temp_save_path"),
+                  'orcid_save_path': dbutils.secrets.get(scope = "author-disambiguation-buckets", key = "orcid_save_path")}
+    elif secret_name == "heroku-creds":
+        secret = {'heroku_id': dbutils.secrets.get(scope = "heroku-creds", key = "heroku_id"),
+                  'heroku_token': dbutils.secrets.get(scope = "heroku-creds", key = "heroku_token")}
 
-    # Create a Secrets Manager client
-    session = boto3.session.Session()
-    client = session.client(
-        service_name='secretsmanager',
-        region_name=region_name
-    )
-
-    
-    get_secret_value_response = client.get_secret_value(
-            SecretId=secret_name)
-
-    # Decrypts secret using the associated KMS key.
-    secret_string = get_secret_value_response['SecretString']
-    
-    secret = json.loads(secret_string)
     return secret
 
 # COMMAND ----------
 
 secret = get_secret()
-buckets = get_secret("prod/aws/buckets")
+buckets = get_secret("author-disambiguation-buckets")
 
 # COMMAND ----------
 
