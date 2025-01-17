@@ -124,6 +124,11 @@ def string_matching_function(aff_string):
         if 'Brunel University' in aff_string:
             affs.append(59433898)
 
+        # Western University (Canada)
+        if 'Western University' in aff_string:
+            if any(word in aff_string for word in ['London','Ontario','Canada','N6A 3K7']):
+                affs.append(125749732)
+
     # Changchun University of Technology
     if 'Changchun' in aff_string:
         if any(word in aff_string for word in ['Changchun University of Technology','CCUT']):

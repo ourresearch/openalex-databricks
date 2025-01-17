@@ -35,6 +35,149 @@ def matching_based_on_current_affs(current_affs, aff_string):
             if 'sea' not in aff_string.lower():
                 current_affs.remove(282179226)
 
+    # Universidad Publica de Navarra vs Universidad de Navarra
+    if 88155538 in current_affs:
+        if any(word in aff_string.lower() for word in ['universidad publica','universidad pública']):
+            current_affs.remove(88155538)
+            current_affs.append(175051016)
+
+    if 175051016 in current_affs:
+        if any(word in aff_string.lower() for word in ['universidad de navarra']):
+            current_affs.remove(175051016)
+            current_affs.append(88155538)
+
+    # University of Mannheim
+    if 177802217 in current_affs:
+        if any(word in aff_string.lower() for word in ['university hospital mannheim','university-hospital mannheim',
+                                                       'mannheim university hospital']):
+            current_affs.remove(177802217)
+            if any(word in aff_string.lower() for word in ['university of heidelberg','heidelberg university','faculty of clinical medicine mannheim',
+                                                           'universität heidelberg','universitätsklinik','university clinic, mannheim']):
+                current_affs.append(4210156450)
+                current_affs.append(223822909)
+            elif 'university hospital heidelberg' in aff_string.lower():
+                current_affs.append(4210156450)
+                current_affs.append(223822909)
+            else:
+                current_affs.append(4210156450)
+        elif any(word in aff_string.lower() for word in ['university of heidelberg','heidelberg university','faculty of clinical medicine mannheim',
+                                                         'universität heidelberg','universitätsklinik','university clinic, mannheim']):
+            if any(word in aff_string.lower() for word in ['university of mannheim','mannheim university','universität mannheim']):
+                current_affs.remove(177802217)
+                current_affs.append(223822909)
+        else:
+            pass
+
+    # Western Caspian University
+    if 3130874397 in current_affs:
+        if any(word in aff_string.lower() for word in ['caspian','baku']):
+            pass
+        else:
+            current_affs.remove(3130874397)
+            if 'Case Western' in aff_string:
+                current_affs.append(58956616)
+            elif any(word in aff_string.lower() for word in ['south western', 'central western','western university of health science']):
+                pass
+            else:
+                current_affs.append(125749732)
+
+    # Brown University
+    if 27804330 in current_affs:
+        if 196272386 in current_affs:
+            if any(word in aff_string for word in ['Providence College', 'PC']):
+                pass
+            else:
+                current_affs.remove(196272386)
+
+    # Archéologie et Histoire Ancienne : Méditerranée – Europe
+    if 4210089340 in current_affs:
+        if any(word in aff_string.lower() for word in ['7044', 'histoire ancienne']):
+            pass
+        else:
+            current_affs.remove(4210089340)
+
+    # Institut Pascal
+    if 169645620 in current_affs:
+        if any(word in aff_string.lower() for word in ['institut blaise-pascal','institut blaise pascal','institut pascal']):
+            pass
+        elif any(word in aff_string.lower() for word in ['clermont','auvergne','blaise pascal','blaise-pascal']):
+            current_affs.remove(169645620)
+            current_affs.append(198244214)
+        elif all(word in aff_string.lower() for word in ['blaise','pascal']):
+            current_affs.remove(169645620)
+            current_affs.append(198244214)
+        else:
+            pass
+    
+    # Tekniska Högskolans Studentkår
+    if 4210147696 in current_affs:
+        current_affs.remove(4210147696)
+        current_affs.append(86987016)
+
+    # Purdue University
+    if 2801333002 in current_affs:
+        current_affs.remove(2801333002)
+        if 'Fort Wayne' in aff_string:
+            current_affs.append(4210130184)
+        elif 'Northwest' in aff_string:
+            current_affs.append(117015748)
+        elif 'Columbus' in aff_string:
+            current_affs.append(59900826)
+        else:
+            current_affs.append(219193219)
+
+    # Western University (Cambodia)
+    if 4210116551 in current_affs:
+        if 'cambodia' in aff_string.lower():
+            pass
+        elif 'KH' in aff_string:
+            pass
+        else:
+            current_affs.remove(4210116551)
+            if 'Lurie' in aff_string:
+                current_affs.append(4390039227)
+            elif 'northwestern university' in aff_string.lower():
+                pass
+            elif 'western university of sydney' in aff_string.lower():
+                pass
+            else:
+                current_affs.append(125749732)
+
+    # Western University (Canada)
+    if 125749732 in current_affs:
+        if 'caspian' in aff_string.lower():
+            current_affs.remove(125749732)
+            current_affs.append(3130874397)
+
+    # UniLaSalle
+    if 4210156868 in current_affs:
+        if 'france' in aff_string.lower():
+            pass
+        elif any(word in aff_string.lower() for word in ['beauvais','beauvaisis','institut polytechnique']):
+            pass
+        else:
+            current_affs.remove(4210156868)
+            current_affs.append(4210102413)
+
+    # Humana
+    if 96048030 in current_affs:
+        if 'humana' in aff_string.lower():
+            if any(word in aff_string.lower() for word in ['louisville','kentucky','united states']):
+                pass
+            elif any(word in aff_string for word in ['KY', ' 40217', 'USA']):
+                pass
+            else:
+                current_affs.remove(96048030)
+        else:
+            current_affs.remove(96048030)
+
+    # Bocas del Toro Research Station
+    if 4210115077 in current_affs:
+        if 'Smith' in aff_string:
+            pass
+        else:
+            current_affs.remove(4210115077)
+
     # American Institutes for Research
     if 1293631320 in current_affs:
         if 'ethical approval' in aff_string.lower():

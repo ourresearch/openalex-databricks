@@ -1,6 +1,7 @@
 # Working folders
 *working_folder_for_new_features/*
 *jobs/z_testing/*
+*.DS_Store*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
